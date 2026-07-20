@@ -1,0 +1,51 @@
+[
+    {
+        "surfaced_timestamp": "2024-06-20T12:34:56Z",
+        "surfaced_location": {
+            "latitude": 37.7749,
+            "longitude": -122.4194
+        },
+        "action_sent": "drift at 5m for 1 hour"
+        "estimated_state": {
+            "time": "2024-06-20T12:34:56Z",
+            "location": {
+                "latitude": 37.7749,
+                "longitude": -122.4194
+            },
+            "depth": 0.0,
+            "phase": "communicating",
+            "x": 123.45,
+            "y": 678.90,
+            "z": 0.0,
+            "P": [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0]
+            ]
+        }
+        "real_state": {
+            "time": "2024-06-20T12:34:56Z",
+            "location": {
+                "latitude": 37.7749,
+                "longitude": -122.4194
+            },
+            "depth": 0.0,
+            "phase": "communicating",
+            "x": 123.45,
+            "y": 678.90,
+            "z": 0.0,
+            "P": [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0]
+            ]
+        }
+        "nis": 0.5
+        "actions_cost": {
+            "park on bottom for 12 h": 100
+
+        }
+    }
+]

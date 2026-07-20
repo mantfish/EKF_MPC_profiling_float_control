@@ -1,0 +1,57 @@
+{
+    "float_id": 123456,
+    "target_lat": 12.0,
+    "target_lon": 53.0,
+    "radius_std": 10.0,
+    "flow_time_horizon_hours": 6.0,
+    "flow_weight": 1.0,
+    "distance_weight": 1.0,
+    "science_weight": 1.0,
+    "variance_weight": 1.0,
+    "vertical_dt": 60.0,
+    "parking_dt": 600.0,
+    "bathymetry_file_name": "bathymetry.nc",
+    
+    "estimated_tranmission_time_hours": 0.5,
+    "ascent_speed_m_per_s": 0.1,
+    "descent_speed_m_per_s": 0.1,
+    "process_noise_diagonal": [ 4,4,(0.5/60)**2, (0.5/60)**2]
+    ]
+    "possible_actions": [
+        {
+            "name": "drift at 5m for 1 hour",
+            "duration_hours": 1,
+            "depth_m": 5,
+            "action_type": "drift",
+            "science_cost": 1.0
+        },
+        {
+            "name": "park at 10m for 12 hours",
+            "duration_hours": 12,
+            "depth_m": 10,
+            "action_type": "park",
+            "science_cost": 1.0
+        },
+        {
+            "name": "park at 30m for 12 hours",
+            "duration_hours": 12,
+            "depth_m": 30,
+            "action_type": "park",
+            "science_cost": 0.8
+        },
+        {
+            "name": "park at 500m for 48 hours",
+            "duration_hours": 48,
+            "depth_m": 500,
+            "action_type": "park",
+            "science_cost": 0.5
+        },
+        {
+            "name": "park at 500m for 120 hours",
+            "duration_hours": 120,
+            "depth_m": 500,
+            "action_type": "park",
+            "science_cost": 0.0
+        }
+    ]
+}
