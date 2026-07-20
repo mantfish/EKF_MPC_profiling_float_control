@@ -1,7 +1,7 @@
 {
     "float_id": 123456,
-    "target_lat": 12.0,
-    "target_lon": 53.0,
+    "target_lat": 55.00,
+    "target_lon": 15.80,
     "radius_std": 10.0,
     "flow_time_horizon_hours": 6.0,
     "flow_weight": 1.0,
@@ -15,8 +15,7 @@
     "estimated_tranmission_time_hours": 0.5,
     "ascent_speed_m_per_s": 0.1,
     "descent_speed_m_per_s": 0.1,
-    "process_noise_diagonal": [ 4,4,(0.5/60)**2, (0.5/60)**2]
-    ]
+    "process_noise_diagonal": [4.0, 4.0, 6.944444444444444e-05, 6.944444444444444e-05],
     "possible_actions": [
         {
             "name": "drift at 5m for 1 hour",

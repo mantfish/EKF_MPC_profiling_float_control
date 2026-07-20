@@ -1,6 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import  Literal
+
+import numpy as np
 
 @dataclass
 class Location:
@@ -35,17 +38,6 @@ class ControlAction:
     duration_hours: float       # hours
     science_cost: float         # 0 (no science) to 1 (full science)
 
-def get_action(action_name: str, float_id: int) -> ControlAction:
-    config = read_config(float_id)
-    for action in config["possible_actions"]:
-        if action["name"] == action_name:
-            return ControlAction(
-                parking_depth=action["parking_depth"],
-                duration_hours=action["duration_hours"],
-                science_cost=action["science_cost"]
-            )
-    raise ValueError(f"Action '{action_name}' not found in possible actions.")
-
 @dataclass
 class SurfacingLog:
     time: datetime
@@ -54,4 +46,23 @@ class SurfacingLog:
 
 @dataclass
 class Config:
-    # TODO implement this here clearly
+    """Mirrors the fields in a float's config.json (see float_123456/config.json)."""
+    float_id: int
+    target_lat: float
+    target_lon: float
+    radius_std: float
+    flow_time_horizon_hours: float
+    flow_weight: float
+    distance_weight: float
+    science_weight: float
+    variance_weight: float
+    vertical_dt: float
+    parking_dt: float
+    bathymetry_file_name: str
+    estimated_tranmission_time_hours: float
+    ascent_speed_m_per_s: float
+    descent_speed_m_per_s: float
+    possible_actions: list[dict]
+    data_dir: Path
+    model: str = "CMEMS"
+    Q: np.ndarray = field(default_factory=lambda: np.zeros(4))  # process noise diagonal [x, y, bx, by], from config.json's process_noise_diagonal

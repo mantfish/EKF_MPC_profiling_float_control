@@ -1,19 +1,21 @@
-import pathlib as path
-from typing import *
-import jsons
-import copernicusmarine
-import tempfile
+import json
 import logging
-import os
-from datetime import datetime
-from helpers import *
-import numpy as np
 import math
+import os
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
+import xarray as xr
+import copernicusmarine
 from scipy.interpolate import RegularGridInterpolator
 
+from helpers import *
+
 CMEMS_DATASET_ID = "cmems_mod_bal_phy_anfc_PT1H-i_202411"
-CMEMS_DEPTH_MAX  = 200.0   
+CMEMS_DEPTH_MAX  = 200.0
 CMEMS_TIME_PRIOR = 12
 KM_PER_DEG_LAT = 111.32
 
@@ -22,111 +24,159 @@ logger = logging.getLogger(__name__)
 MAX_DRIFT = 100 # max drift in km expected float can undergo
 
 
-def read_config(float_id: int) -> dict:
+def _float_dir(float_id: int) -> Path:
+    return Path(f"float_{float_id}")
+
+
+def read_json(file_path) -> dict:
+    "Reads and parses an arbitrary JSON file"
+    with open(file_path, "r") as f:
+        return json.load(f)
+
+
+def read_config(float_id: int) -> Config:
     "Opens config file"
 
-    config_path = path.join(path.dirname(float_id), "config.json")
+    config_path = _float_dir(float_id) / "config.json"
 
     try:
         config_json = read_json(config_path)
     except Exception as e:
         logger.error("Error reading config file: %s", e)
         raise
-    # Todo parse control actions into actions
-    config.Q = np.diagonal(config_json["process_noise"])
+
+    config = Config(
+        float_id=config_json["float_id"],
+        target_lat=config_json["target_lat"],
+        target_lon=config_json["target_lon"],
+        radius_std=config_json["radius_std"],
+        flow_time_horizon_hours=config_json["flow_time_horizon_hours"],
+        flow_weight=config_json["flow_weight"],
+        distance_weight=config_json["distance_weight"],
+        science_weight=config_json["science_weight"],
+        variance_weight=config_json["variance_weight"],
+        vertical_dt=config_json["vertical_dt"],
+        parking_dt=config_json["parking_dt"],
+        bathymetry_file_name=config_json["bathymetry_file_name"],
+        estimated_tranmission_time_hours=config_json["estimated_tranmission_time_hours"],
+        ascent_speed_m_per_s=config_json["ascent_speed_m_per_s"],
+        descent_speed_m_per_s=config_json["descent_speed_m_per_s"],
+        possible_actions=config_json["possible_actions"],
+        data_dir=_float_dir(float_id),
+        model=config_json.get("model", "CMEMS"),
+        Q=np.array(config_json["process_noise_diagonal"]),
+    )
     return config
 
-def download_cmems_data_around_float(location: Location) -> xr.Dataset: 
-    
+
+def download_cmems_data_around_float(location: Location, earliest_time, latest_time) -> xr.Dataset:
+
     bbox = define_region_aroung_float(location)
+    start_datetime = pd.Timestamp(earliest_time) - pd.Timedelta(hours=CMEMS_TIME_PRIOR)
 
     kwargs: dict = dict(
         dataset_id=CMEMS_DATASET_ID,
         variables=["uo", "vo"],
-        minimum_latitude=bbox.lat_min,
-        maximum_latitude=bbox.lat_max,
-        minimum_longitude=bbox.lon_min,
-        maximum_longitude=bbox.lon_max,
+        minimum_latitude=bbox.latitude_min,
+        maximum_latitude=bbox.latitude_max,
+        minimum_longitude=bbox.longitude_min,
+        maximum_longitude=bbox.longitude_max,
         minimum_depth=0.52,
         maximum_depth=CMEMS_DEPTH_MAX,
+        start_datetime=start_datetime.isoformat(),
+        end_datetime=pd.Timestamp(latest_time).isoformat(),
         output_filename="cmems_subset.nc",
-        # no start_datetime / end_datetime -> full available range
     )
-
-    #TODO probably need to thrown in an end datetime too. 
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         kwargs["output_directory"] = tmp_dir
-    tmp_path = os.path.join(tmp_dir, "cmems_subset.nc")
+        tmp_path = os.path.join(tmp_dir, "cmems_subset.nc")
 
-    copernicusmarine.subset(**kwargs)
-    logger.info("CMEMS subset downloaded on %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        copernicusmarine.subset(**kwargs)
+        logger.info("CMEMS subset downloaded on %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-    ds = xr.open_dataset(tmp_path)
+        ds = xr.open_dataset(tmp_path)
+        ds.load()  # materialize into memory before tmp_dir (and the file in it) is deleted
 
     first_time = ds.time[0].values
     last_time = ds.time[-1].values
 
     logger.info("CMEMS subset time range: %s to %s", first_time, last_time)
     logger.info("CMEMS subset lat range: %s to %s", ds.latitude.min().values, ds.latitude.max().values)
-    
+
     return ds
 
-def read_last_surfacing_and_action(float_id: int) -> dict:
-    surfacing_and_action_log_path = path.join(path.dirname(float_id), "surfacing_log.json")
 
-    if not path.exists(surfacing_log_path):
+def read_last_surfacing_and_action(float_id: int) -> dict:
+    surfacing_and_action_log_path = _float_dir(float_id) / "surfacing_action_log.json"
+
+    if not surfacing_and_action_log_path.exists():
         raise FileNotFoundError(f"Surfacing and action log file does not exist for float ID: {float_id}")
 
-    with open(surfacing_and_action_log_path, "r") as f:
-        surfacing_and_action_log = jsons.load(f)
+    surfacing_and_action_log = read_json(surfacing_and_action_log_path)
 
-    last_surfacing = surfacing_and_action_log[-1]  # Get the last surfacing
-
-    return [last_surfacing["location"], last_surfacing["action"]]
+    return surfacing_and_action_log[-1]  # Get the last surfacing
 
 
-def write_last_surfacing_and_action(float_id: int, location: Location, action: ControlAction, estimated_state, innovated_state, nis) -> None:
-    surfacing_and_action_log_path = path.join(path.dirname(float_id), "surfacing_log.json")
+def _serialize_state(state: EstimatedState) -> dict:
+    return {
+        "time": state.time.isoformat() if hasattr(state.time, "isoformat") else state.time,
+        "location": {
+            "latitude": state.location.latitude,
+            "longitude": state.location.longitude,
+        },
+        "depth": state.depth,
+        "phase": state.phase,
+        "x": state.x,
+        "y": state.y,
+        "z": state.z,
+        "bx": state.bx,
+        "by": state.by,
+        "P": state.P.tolist(),
+    }
 
-    if path.exists(surfacing_and_action_log_path):
-        with open(surfacing_and_action_log_path, "r") as f:
-            surfacing_and_action_log = jsons.load(f)
+
+def write_surfacing_action_log(
+    float_id: int,
+    action_name: str,
+    surfaced_timestamp,
+    surfaced_location: Location,
+    estimated_state: EstimatedState,
+    real_state: EstimatedState,
+    nis: float,
+    actions_cost: dict,
+) -> None:
+    """Appends one surfacing/action entry to surfacing_log.json.
+
+    Schema matches float_123456/surfacing_action_log.json: estimated_state is the
+    predicted state before the Kalman innovation step, real_state is the corrected
+    state after it, actions_cost is the {action_name: cost} map evaluated when
+    choosing action_sent.
+    """
+    log_path = _float_dir(float_id) / "surfacing_action_log.json"
+
+    if log_path.exists():
+        surfacing_and_action_log = read_json(log_path)
     else:
         surfacing_and_action_log = []
 
-    new_entry = {
-        "time": datetime.now().isoformat(),
-        "location": {
-            "latitude": location.latitude,
-            "longitude": location.longitude
+    surfacing_and_action_log.append({
+        "surfaced_timestamp": surfaced_timestamp.isoformat() if hasattr(surfaced_timestamp, "isoformat") else surfaced_timestamp,
+        "surfaced_location": {
+            "latitude": surfaced_location.latitude,
+            "longitude": surfaced_location.longitude,
         },
-        "action": {
-            "parking_depth": action.parking_depth,
-            "duration_hours": action.duration_hours,
-            "science_cost": action.science_cost
-        },
-        "estimated_state": {
-            "x": estimated_state.x,
-            "y": estimated_state.y,
-            "bx": estimated_state.bx,
-            "by": estimated_state.by
-        },
-        "innovated_state": {
-            "x": innovated_state.x,
-            "y": innovated_state.y,
-            "bx": innovated_state.bx,
-            "by": innovated_state.by
-        },
-        "nis": nis
-    }
+        "action_sent": action_name,
+        "estimated_state": _serialize_state(estimated_state),
+        "real_state": _serialize_state(real_state),
+        "nis": nis,
+        "actions_cost": actions_cost,
+    })
 
-    surfacing_and_action_log.append(new_entry)
+    with open(log_path, "w") as f:
+        json.dump(surfacing_and_action_log, f, indent=4)
 
-    with open(surfacing_and_action_log_path, "w") as f:
-        jsons.dump(surfacing_and_action_log, f, indent=4)
-
-    logger.info("Surfacing and action log updated for float ID: %s", float_id)
+    logger.info("Surfacing action log updated for float ID: %s", float_id)
 
 
 def define_region_aroung_float(location: Location) -> Region:
@@ -144,46 +194,33 @@ def define_region_aroung_float(location: Location) -> Region:
         longitude_max=lon_max
     )
 
-def read_state(float_id: int) -> dict:
-    
-    state_file_path = path.join(path.dirname(float_id), "estimated_state.parquet")
-    if not path.exists(state_file_path):
+def read_state(float_id: int) -> pd.DataFrame:
+
+    state_file_path = _float_dir(float_id) / "estimated_state.parquet"
+    if not state_file_path.exists():
         logger.error("State file does not exist for float ID: %s", float_id)
         raise FileNotFoundError(f"State file does not exist for float ID: {float_id}")
 
-    state_df = pd.read_parquet(state_file_path)
-    
-    return state_df
+    return pd.read_parquet(state_file_path)
 
 def write_state(float_id: int, state_df: pd.DataFrame) -> None:
-    state_file_path = path.join(path.dirname(float_id), "estimated_state.parquet")
+    state_file_path = _float_dir(float_id) / "estimated_state.parquet"
     state_df.to_parquet(state_file_path, index=False)
     logger.info("Estimated state history written to file for float ID: %s", float_id)
-    return True
 
-def read_surfacings(float_id: int) -> pd.DataFrame:
-    surfacing_file_path = path.join(path.dirname(float_id), "surfacing_log.json")
-    if not path.exists(surfacing_file_path):
-        logger.error("Surfacing log file does not exist for float ID: %s", float_id)
-        raise FileNotFoundError(f"Surfacing log file does not exist for float ID: {float_id}")
+def get_action(action_name: str, config: Config) -> ControlAction:
+    for action in config.possible_actions:
+        if action["name"] == action_name:
+            return ControlAction(
+                parking_depth=action["depth_m"],
+                duration_hours=action["duration_hours"],
+                science_cost=action["science_cost"],
+            )
+    raise ValueError(f"Action '{action_name}' not found in possible actions.")
 
-    surfacing_df = jsons.load(open(surfacing_file_path, "r"))
-
-    last_surfacing
-    
-    return surfacing_df
-
-def get_action(action_name: str, config) -> ControlAction:
-    possible_actions = config["possible_actions"]
-    if action_name not in possible_actions:
-        raise ValueError(f"Action '{action_name}' not found in possible actions.")
-    else:
-        action_config = possible_actions[action_name]
-        return ControlAction(
-            parking_depth=action_config["parking_depth"],
-            duration_hours=action_config["duration_hours"],
-            science_cost=action_config["science_cost"]
-        )
+def load_bathymetry(bathymetry_path) -> xr.Dataset:
+    "Loads a GEBCO-style bathymetry NetCDF file (see build_bathymetry_interpolator)."
+    return xr.open_dataset(bathymetry_path)
 
 def build_bathymetry_interpolator(bathy_ds: xr.Dataset):
     """Build a fast scipy interpolator for seabed depth from the GEBCO dataset.
@@ -220,6 +257,11 @@ def xy_to_latlon(x: float, y: float, start_lat: float, start_lon: float) -> tupl
     lat = start_lat + y / 111_000.0
     lon = start_lon + x / (111_000.0 * math.cos(math.radians(start_lat)))
     return lat, lon
+
+def latlon_to_xy(lat: float, lon: float, start_lat: float, start_lon: float) -> tuple[float, float]:
+    x = (lon - start_lon) * 111_000.0 * math.cos(math.radians(start_lat))
+    y = (lat - start_lat) * 111_000.0
+    return x, y
 
 
 def build_uv_interpolators(model_ds):
@@ -279,31 +321,3 @@ def query_uv(u_interp, v_interp, bounds, t, z, lat, lon):
         v = 0.0
 
     return u, v
-
-def write_surfacings(float_id: int, estiamed_state, innovated_state):
-    surfacing_log_path = path.join(path.dirname(float_id), "surfacing_log.json")
-    surfacing_entry = {
-        "time": innovated_state.time.isoformat(),
-        "location": {
-            "latitude": innovated_state.location.latitude,
-            "longitude": innovated_state.location.longitude
-        },
-        "daction": {
-            "parking_depth": estiamed_state.parking_depth,
-            "duration_hours": estiamed_state.duration_hours,
-            "science_cost": estiamed_state.science_cost
-        }
-    }
-
-    if path.exists(surfacing_log_path):
-        with open(surfacing_log_path, "r") as f:
-            surfacing_log = jsons.load(f)
-    else:
-        surfacing_log = []
-
-    surfacing_log.append(surfacing_entry)
-
-    with open(surfacing_log_path, "w") as f:
-        jsons.dump(surfacing_log, f, indent=4)
-
-    logger.info("Surfacing log updated for float ID: %s", float_id)
