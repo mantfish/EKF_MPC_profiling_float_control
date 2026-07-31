@@ -1,0 +1,35 @@
+{
+    "float_id": 6990707,
+    "target_lat": 54.960618333333336,
+    "target_lon": 15.637018333333334,
+    "estimated_tranmission_time_hours": 0.9066666666666666,
+    "ascent_speed_m_per_s": 0.043499256874950834,
+    "descent_speed_m_per_s": 0.01769118401231613,
+    "bathymetry_file_name": "bathymetry.nc",
+    "possible_actions": [
+        {
+            "name": "Park on bottom for 49.0 hours",
+            "duration_hours": 49.043177885370646,
+            "depth_m": 76.14285605294364,
+            "action_type": "park",
+            "science_cost": 1.0
+        }
+    ],
+    "radius_std": 10.0,
+    "flow_time_horizon_hours": 6.0,
+    "flow_weight": 1.0,
+    "distance_weight": 1.0,
+    "science_weight": 1.0,
+    "variance_weight": 1.0,
+    "vertical_dt": 60.0,
+    "parking_dt": 600.0,
+    "max_drift": 20.0,
+    "model_type": "CMEMS",
+    "model_id": "cmems_mod_bal_phy_anfc_PT1H-i",
+    "process_noise_diagonal": [
+        4.0,
+        4.0,
+        6.944444444444444e-05,
+        6.944444444444444e-05
+    ]
+}

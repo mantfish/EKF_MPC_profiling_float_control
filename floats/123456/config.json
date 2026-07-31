@@ -11,7 +11,9 @@
     "vertical_dt": 60.0,
     "parking_dt": 600.0,
     "bathymetry_file_name": "bathymetry.nc",
-    
+    "model_type": "CMEMS",
+    "model_id": "cmems_mod_bal_phy_anfc_PT1H-i",
+    "max_drift": 20,
     "estimated_tranmission_time_hours": 0.5,
     "ascent_speed_m_per_s": 0.1,
     "descent_speed_m_per_s": 0.1,

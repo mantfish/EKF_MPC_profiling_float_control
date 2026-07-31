@@ -1,9 +1,9 @@
 import logging
 import math
-from datetime import timedelta
-from typing import Callable
+from datetime import datetime, timedelta
 
 import numpy as np
+from scipy.interpolate import RegularGridInterpolator
 
 from data_handler import query_uv, xy_to_latlon
 from helpers import ControlAction, EstimatedState, Location
@@ -36,8 +36,15 @@ class KFMPC:
         target_y = (self.target.latitude - start_lat) * 111_000.0
         return target_x, target_y
 
-    def _flow_term(self, state: EstimatedState, interp_u: Callable, interp_v: Callable, bounds: dict,
-                   start_lat: float, start_lon: float) -> float:
+    def _flow_term(
+        self,
+        state: EstimatedState,
+        interp_u: RegularGridInterpolator,
+        interp_v: RegularGridInterpolator,
+        bounds: dict[str, float],
+        start_lat: float,
+        start_lon: float,
+    ) -> float:
         target_x, target_y = self._target_xy(start_lat, start_lon)
         to_target = np.array([target_x - state.x, target_y - state.y])
         norm = np.linalg.norm(to_target)
@@ -54,7 +61,14 @@ class KFMPC:
             uy += v + state.by
         return float(np.dot(np.array([ux, uy]), n))/(self.time_horizon_hours)
 
-    def _distance_term(self, current_state, previous_state, action, start_lat, start_lon):
+    def _distance_term(
+        self,
+        current_state: EstimatedState,
+        previous_state: EstimatedState,
+        action: ControlAction,
+        start_lat: float,
+        start_lon: float,
+    ) -> float:
         target_x, target_y = self._target_xy(start_lat, start_lon)
         d_current = math.sqrt((current_state.x - target_x) ** 2 + (current_state.y - target_y) ** 2)
         d_prev = math.sqrt((previous_state.x - target_x) ** 2 + (previous_state.y - target_y) ** 2)
@@ -75,9 +89,9 @@ class KFMPC:
         final_state: EstimatedState,
         prev_real_state: EstimatedState,
         action: ControlAction,
-        interp_u: Callable,
-        interp_v: Callable,
-        bounds: dict,
+        interp_u: RegularGridInterpolator,
+        interp_v: RegularGridInterpolator,
+        bounds: dict[str, float],
         start_lat: float,
         start_lon: float,
     ) -> tuple[float, float, float, float, float]:
@@ -86,16 +100,16 @@ class KFMPC:
         distance = self._distance_term(current_state=final_state, previous_state=prev_real_state, action=action, start_lat=start_lat, start_lon=start_lon)
         science = self._science_term(final_state, action, start_lat, start_lon)
         variance = self._variance_term(final_state)
-
         total = (
             - self.flow_weight * flow
             + self.distance_weight * distance
             + self.science_weight * science # TODO check this
             + self.variance_weight * variance
         )
+        logger.info("For action: %e, total cost is: %i. The flow term: %s, distance term: %d, science term: %f, variance: %g", action, total, flow, distance, science, variance)
         return total, flow, distance, science, variance
 
-    def export_parameters(self) -> dict:
+    def export_parameters(self) -> dict[str, float]:
         return {
             "flow_weight": self.flow_weight,
             "distance_weight": self.distance_weight,
@@ -108,9 +122,20 @@ class KFMPC:
         }
 
 
-def compute_jacobian(x, y, z, t, interp_u, interp_v, bounds: dict, start_lat, start_lon, eps=500.0) -> np.ndarray:
+def compute_jacobian(
+    x: float,
+    y: float,
+    z: float,
+    t: datetime,
+    interp_u: RegularGridInterpolator,
+    interp_v: RegularGridInterpolator,
+    bounds: dict[str, float],
+    start_lat: float,
+    start_lon: float,
+    eps: float = 500.0,
+) -> np.ndarray:
     """4x4 linearised dynamics Jacobian F for state [x, y, bx, by]."""
-    def qv(xi, yi):
+    def qv(xi: float, yi: float) -> tuple[float, float]:
         lat, lon = xy_to_latlon(xi, yi, start_lat, start_lon)
         return query_uv(interp_u, interp_v, bounds, t, z, lat, lon)
 

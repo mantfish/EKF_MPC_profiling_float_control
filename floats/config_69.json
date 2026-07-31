@@ -1,0 +1,29 @@
+{
+    "float_id": 6990657,
+    "target_lat": 67.32738420220781, 
+    "target_lon": -25.36903387222414,
+    "radius_std": 10.0,
+    "flow_time_horizon_hours": 6.0,
+    "flow_weight": 1.0,
+    "distance_weight": 1.0,
+    "science_weight": 1.0,
+    "variance_weight": 1.0,
+    "vertical_dt": 60.0,
+    "parking_dt": 600.0,
+    "model_type": "CMEMS",
+    "model_id": "cmems_mod_glo_phy_anfc_0.083deg_PT1H-m",
+    "max_drift": 20,
+    "estimated_tranmission_time_hours": 0.75,
+    "ascent_speed_m_per_s": 0.09,
+    "descent_speed_m_per_s": 0.025,
+    "process_noise_diagonal": [4.0, 4.0, 6.944444444444444e-05, 6.944444444444444e-05],
+    "possible_actions": [
+        {
+            "name": "Park on bottom for 119 hours",
+            "duration_hours": 119,
+            "depth_m": 1500,
+            "action_type": "park",
+            "science_cost": 1.0
+        }
+    ]
+}

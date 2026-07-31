@@ -1,10 +1,13 @@
+import ast
 import json
 import logging
 import math
 import os
 import tempfile
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -12,9 +15,9 @@ import xarray as xr
 import copernicusmarine
 from scipy.interpolate import RegularGridInterpolator
 
-from helpers import *
+from helpers import Config, ControlAction, EstimatedState, Location, Region
 
-CMEMS_DATASET_ID = "cmems_mod_bal_phy_anfc_PT1H-i_202411"
+
 CMEMS_DEPTH_MAX  = 200.0
 CMEMS_TIME_PRIOR = 12
 KM_PER_DEG_LAT = 111.32
@@ -25,27 +28,23 @@ MAX_DRIFT = 100 # max drift in km expected float can undergo
 
 
 def _float_dir(float_id: int) -> Path:
-    return Path(f"float_{float_id}")
+    return Path("floats") / str(float_id)
+
+def check_if_float_exists(float_id: int) -> bool:
+    return _float_dir(float_id).is_dir()
 
 
-def read_json(file_path) -> dict:
+def read_json(file_path: str | Path) -> Any:
     "Reads and parses an arbitrary JSON file"
-    with open(file_path, "r") as f:
-        return json.load(f)
-
-
-def read_config(float_id: int) -> Config:
-    "Opens config file"
-
-    config_path = _float_dir(float_id) / "config.json"
-
     try:
-        config_json = read_json(config_path)
-    except Exception as e:
-        logger.error("Error reading config file: %s", e)
-        raise
+        with open(file_path, "r") as f:
+            return json.load(f)
+    except:
+        raise TypeError("The file is not in .json format")
 
-    config = Config(
+
+def config_from_dict(config_json: dict, float_id: int) -> Config:
+    return Config(
         float_id=config_json["float_id"],
         target_lat=config_json["target_lat"],
         target_lon=config_json["target_lon"],
@@ -63,19 +62,51 @@ def read_config(float_id: int) -> Config:
         descent_speed_m_per_s=config_json["descent_speed_m_per_s"],
         possible_actions=config_json["possible_actions"],
         data_dir=_float_dir(float_id),
-        model=config_json.get("model", "CMEMS"),
+        model_type=config_json.get("model_type", "CMEMS"),
+        dataset_id=config_json.get("model_id", "cmems_mod_bal_phy_anfc_PT1H-i_202411"),
+        max_drift=config_json.get("max_drift", MAX_DRIFT),
         Q=np.array(config_json["process_noise_diagonal"]),
     )
-    return config
 
 
-def download_cmems_data_around_float(location: Location, earliest_time, latest_time) -> xr.Dataset:
+def read_config(float_id: int) -> Config:
+    "Opens config file"
+    config_path = _float_dir(float_id) / "config.json"
+    try:
+        config_json = read_json(config_path)
+    except Exception as e:
+        logger.error("Error reading config file: %s", e)
+        raise
+    return config_from_dict(config_json, float_id)
 
-    bbox = define_region_aroung_float(location)
+
+def _cmems_credentials() -> tuple[str, str]:
+    username = os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME")
+    password = os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD")
+    if not username or not password:
+        raise RuntimeError(
+            "Copernicus Marine credentials are not configured. Set the "
+            "COPERNICUSMARINE_SERVICE_USERNAME and COPERNICUSMARINE_SERVICE_PASSWORD "
+            "environment variables (register for free at "
+            "https://data.marine.copernicus.eu/register)."
+        )
+    return username, password
+
+
+def download_cmems_data_around_float(
+    location: Location, earliest_time: datetime, latest_time: datetime, config: Config
+) -> xr.Dataset:
+
+    username, password = _cmems_credentials()
+    if config.max_drift:
+        bbox = define_region_aroung_float(location, config.max_drift)
+    else:
+        bbox = define_region_aroung_float(location, MAX_DRIFT)
+
     start_datetime = pd.Timestamp(earliest_time) - pd.Timedelta(hours=CMEMS_TIME_PRIOR)
 
     kwargs: dict = dict(
-        dataset_id=CMEMS_DATASET_ID,
+        dataset_id=config.dataset_id,
         variables=["uo", "vo"],
         minimum_latitude=bbox.latitude_min,
         maximum_latitude=bbox.latitude_max,
@@ -86,6 +117,8 @@ def download_cmems_data_around_float(location: Location, earliest_time, latest_t
         start_datetime=start_datetime.isoformat(),
         end_datetime=pd.Timestamp(latest_time).isoformat(),
         output_filename="cmems_subset.nc",
+        username=username,
+        password=password,
     )
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -93,6 +126,14 @@ def download_cmems_data_around_float(location: Location, earliest_time, latest_t
         tmp_path = os.path.join(tmp_dir, "cmems_subset.nc")
 
         copernicusmarine.subset(**kwargs)
+
+        if not os.path.exists(tmp_path):
+            raise RuntimeError(
+                "CMEMS subset download did not produce an output file. Check that "
+                "the Copernicus Marine credentials are valid and the toolbox logs "
+                "above for the underlying error."
+            )
+
         logger.info("CMEMS subset downloaded on %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         ds = xr.open_dataset(tmp_path)
@@ -107,7 +148,7 @@ def download_cmems_data_around_float(location: Location, earliest_time, latest_t
     return ds
 
 
-def read_last_surfacing_and_action(float_id: int) -> dict:
+def read_surfacing_and_action(float_id: int) -> dict:
     surfacing_and_action_log_path = _float_dir(float_id) / "surfacing_action_log.json"
 
     if not surfacing_and_action_log_path.exists():
@@ -115,7 +156,7 @@ def read_last_surfacing_and_action(float_id: int) -> dict:
 
     surfacing_and_action_log = read_json(surfacing_and_action_log_path)
 
-    return surfacing_and_action_log[-1]  # Get the last surfacing
+    return surfacing_and_action_log  # Get the last surfacing
 
 
 def _serialize_state(state: EstimatedState) -> dict:
@@ -139,16 +180,17 @@ def _serialize_state(state: EstimatedState) -> dict:
 def write_surfacing_action_log(
     float_id: int,
     action_name: str,
-    surfaced_timestamp,
+    surfaced_timestamp: datetime,
     surfaced_location: Location,
     estimated_state: EstimatedState,
     real_state: EstimatedState,
     nis: float,
+    innovation: np.array,
     actions_cost: dict,
 ) -> None:
     """Appends one surfacing/action entry to surfacing_log.json.
 
-    Schema matches float_123456/surfacing_action_log.json: estimated_state is the
+    Schema matches floats/123456/surfacing_action_log.json: estimated_state is the
     predicted state before the Kalman innovation step, real_state is the corrected
     state after it, actions_cost is the {action_name: cost} map evaluated when
     choosing action_sent.
@@ -170,6 +212,7 @@ def write_surfacing_action_log(
         "estimated_state": _serialize_state(estimated_state),
         "real_state": _serialize_state(real_state),
         "nis": nis,
+        "innovation": innovation.tolist(),
         "actions_cost": actions_cost,
     })
 
@@ -179,14 +222,14 @@ def write_surfacing_action_log(
     logger.info("Surfacing action log updated for float ID: %s", float_id)
 
 
-def define_region_aroung_float(location: Location) -> Region:
+def define_region_aroung_float(location: Location, max_drift: float) -> Region:
     """
     Define a region around the float's location based on the maximum drift expected."""
     start_location = location
-    lat_min = start_location.latitude - MAX_DRIFT / KM_PER_DEG_LAT
-    lon_min = start_location.longitude - MAX_DRIFT / (KM_PER_DEG_LAT * np.cos(np.radians(start_location.latitude)))
-    lat_max = start_location.latitude + MAX_DRIFT / KM_PER_DEG_LAT
-    lon_max = start_location.longitude + MAX_DRIFT / (KM_PER_DEG_LAT * np.cos(np.radians(start_location.latitude)))
+    lat_min = start_location.latitude - max_drift / KM_PER_DEG_LAT
+    lon_min = start_location.longitude - max_drift / (KM_PER_DEG_LAT * np.cos(np.radians(start_location.latitude)))
+    lat_max = start_location.latitude + max_drift / KM_PER_DEG_LAT
+    lon_max = start_location.longitude + max_drift / (KM_PER_DEG_LAT * np.cos(np.radians(start_location.latitude)))
     return Region(
         latitude_min=lat_min,
         latitude_max=lat_max,
@@ -196,16 +239,18 @@ def define_region_aroung_float(location: Location) -> Region:
 
 def read_state(float_id: int) -> pd.DataFrame:
 
-    state_file_path = _float_dir(float_id) / "estimated_state.parquet"
+    state_file_path = _float_dir(float_id) / "estimated_state.csv"
     if not state_file_path.exists():
-        logger.error("State file does not exist for float ID: %s", float_id)
-        raise FileNotFoundError(f"State file does not exist for float ID: {float_id}")
+        logger.info("No state file yet for float ID: %s. Returning empty history.", float_id)
+        return pd.DataFrame()
 
-    return pd.read_parquet(state_file_path)
+    state_df = pd.read_csv(state_file_path, parse_dates=["time"])
+    state_df["P"] = state_df["P"].apply(ast.literal_eval)
+    return state_df
 
 def write_state(float_id: int, state_df: pd.DataFrame) -> None:
-    state_file_path = _float_dir(float_id) / "estimated_state.parquet"
-    state_df.to_parquet(state_file_path, index=False)
+    state_file_path = _float_dir(float_id) / "estimated_state.csv"
+    state_df.to_csv(state_file_path, index=False)
     logger.info("Estimated state history written to file for float ID: %s", float_id)
 
 def get_action(action_name: str, config: Config) -> ControlAction:
@@ -218,11 +263,11 @@ def get_action(action_name: str, config: Config) -> ControlAction:
             )
     raise ValueError(f"Action '{action_name}' not found in possible actions.")
 
-def load_bathymetry(bathymetry_path) -> xr.Dataset:
+def load_bathymetry(bathymetry_path: str | Path) -> xr.Dataset:
     "Loads a GEBCO-style bathymetry NetCDF file (see build_bathymetry_interpolator)."
     return xr.open_dataset(bathymetry_path)
 
-def build_bathymetry_interpolator(bathy_ds: xr.Dataset):
+def build_bathymetry_interpolator(bathy_ds: xr.Dataset) -> Callable[[float, float], float]:
     """Build a fast scipy interpolator for seabed depth from the GEBCO dataset.
 
     Returns a callable ``f(lat, lon) -> depth_m`` that is orders of magnitude
@@ -264,7 +309,9 @@ def latlon_to_xy(lat: float, lon: float, start_lat: float, start_lon: float) -> 
     return x, y
 
 
-def build_uv_interpolators(model_ds):
+def build_uv_interpolators(
+    model_ds: xr.Dataset,
+) -> tuple[RegularGridInterpolator, RegularGridInterpolator, dict[str, float]]:
     """
     Builds (u_interp, v_interp, bounds) from a CMEMS-style xarray Dataset
     with dims (time, depth, latitude, longitude).
@@ -299,7 +346,15 @@ def build_uv_interpolators(model_ds):
     return u_interp, v_interp, bounds
 
 
-def query_uv(u_interp, v_interp, bounds, t, z, lat, lon):
+def query_uv(
+    u_interp: RegularGridInterpolator,
+    v_interp: RegularGridInterpolator,
+    bounds: dict[str, float],
+    t: datetime,
+    z: float,
+    lat: float,
+    lon: float,
+) -> tuple[float, float]:
     """
     Queries (u, v) at a single (t, z, lat, lon) point via linear
     interpolation, clamping to grid bounds and zeroing NaNs.
@@ -321,3 +376,57 @@ def query_uv(u_interp, v_interp, bounds, t, z, lat, lon):
         v = 0.0
 
     return u, v
+
+def state_to_row(state: EstimatedState) -> dict:
+    "Flattens an EstimatedState into a parquet-friendly row (see read_state/write_state)."
+    return {
+        "time": state.time,
+        "latitude": state.location.latitude,
+        "longitude": state.location.longitude,
+        "depth": state.depth,
+        "phase": state.phase,
+        "x": state.x,
+        "y": state.y,
+        "z": state.z,
+        "bx": state.bx,
+        "by": state.by,
+        "Q_x": state.Q[0],
+        "Q_y": state.Q[1],
+        "Q_bx": state.Q[2],
+        "Q_by": state.Q[3],
+        "P": state.P.tolist(),
+    }
+
+def row_to_state(row: pd.Series) -> EstimatedState:
+    "Inverse of _state_row: builds an EstimatedState from a single state-history row."
+    return EstimatedState(
+        time=row["time"],
+        location=Location(latitude=row["latitude"], longitude=row["longitude"]),
+        depth=row["depth"],
+        phase=row["phase"],
+        x=row["x"],
+        y=row["y"],
+        z=row["z"],
+        bx=row["bx"],
+        by=row["by"],
+        Q=np.array([row["Q_x"], row["Q_y"], row["Q_bx"], row["Q_by"]], dtype=float),
+        P=np.array(list(row["P"]), dtype=float),
+    )
+
+def dict_to_state(state_dict: dict) -> EstimatedState:
+    "Inverse of _serialize_state: builds an EstimatedState from a surfacing_action_log 'estimated_state'/'real_state' entry."
+    return EstimatedState(
+        time=pd.Timestamp(state_dict["time"]).tz_localize(None),
+        location=Location(
+            latitude=state_dict["location"]["latitude"],
+            longitude=state_dict["location"]["longitude"],
+        ),
+        depth=state_dict["depth"],
+        phase=state_dict["phase"],
+        x=state_dict["x"],
+        y=state_dict["y"],
+        z=state_dict["z"],
+        bx=state_dict["bx"],
+        by=state_dict["by"],
+        P=np.array(state_dict["P"], dtype=float),
+    )

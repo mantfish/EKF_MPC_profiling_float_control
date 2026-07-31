@@ -1,0 +1,25 @@
+Update state called for float ID: 123456 at 2026-07-21 15:48:15
+Using last action stored in config
+The dataset version has been included in the dataset_id argument. This is not recommended. Please either omit the version —allowing the Toolbox to select it automatically— or specify it using the dataset_version argument.
+Selected dataset version: "202411"
+Selected dataset part: "default"
+Connection pool is full, discarding connection: s3.waw3-1.cloudferro.com. Connection pool size: 10
+Connection pool is full, discarding connection: s3.waw3-1.cloudferro.com. Connection pool size: 10
+Connection pool is full, discarding connection: s3.waw3-1.cloudferro.com. Connection pool size: 10
+Connection pool is full, discarding connection: s3.waw3-1.cloudferro.com. Connection pool size: 10
+Total size of the download: 41.38 MB.
+CMEMS subset downloaded on 2026-07-21 15:48:57
+CMEMS subset time range: 2026-07-19T23:00:00.000000000 to 2026-07-20T12:00:00.000000000
+CMEMS subset lat range: 53.808285 to 55.59159
+Forecast data starts before last surfacing. Using last surfacing time as start of simulation: 2026-07-20 10:35:00
+Simulation start time: 2026-07-20 10:35:00, Simulation end time: 2026-07-20 12:05:00
+Estimated future state at time 2026-07-20 10:45:00: Location (54.697227, 15.195000), Depth 0.000000, Phase communicating
+Estimated future state at time 2026-07-20 10:55:00: Location (54.697126, 15.194621), Depth 0.000000, Phase communicating
+Estimated future state at time 2026-07-20 11:05:00: Location (54.697033, 15.194241), Depth 0.000000, Phase communicating
+Estimated future state at time 2026-07-20 11:15:00: Location (54.696946, 15.193858), Depth 0.000000, Phase communicating
+Estimated future state at time 2026-07-20 11:26:00: Location (54.697023, 15.193390), Depth 6.000000, Phase descending
+Estimated future state at time 2026-07-20 11:37:00: Location (54.696942, 15.193004), Depth 0.000000, Phase communicating
+Estimated future state at time 2026-07-20 11:48:00: Location (54.697064, 15.192574), Depth 6.000000, Phase descending
+Estimated future state at time 2026-07-20 11:59:00: Location (54.696988, 15.192182), Depth 0.000000, Phase communicating
+Estimated future state at time 2026-07-20 12:10:00: Location (54.697154, 15.191791), Depth 6.000000, Phase descending
+Estimated state history written to file for float ID: 123456

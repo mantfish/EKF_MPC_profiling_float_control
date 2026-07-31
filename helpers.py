@@ -31,6 +31,7 @@ class EstimatedState:
     bx: float = 0.0  # estimated current bias east (m/s)
     by: float = 0.0  # estimated current bias north (m/s)
     P: np.ndarray = field(default_factory=lambda: np.diag([100.0, 100.0, 1e-4, 1e-4]))
+    Q: np.ndarray = field(default_factory=lambda: np.zeros(4))  # process noise diagonal [x, y, bx, by] active when this row was computed
     
 @dataclass
 class ControlAction:
@@ -46,7 +47,7 @@ class SurfacingLog:
 
 @dataclass
 class Config:
-    """Mirrors the fields in a float's config.json (see float_123456/config.json)."""
+    """Mirrors the fields in a float's config.json (see floats/123456/config.json)."""
     float_id: int
     target_lat: float
     target_lon: float
@@ -64,5 +65,9 @@ class Config:
     descent_speed_m_per_s: float
     possible_actions: list[dict]
     data_dir: Path
-    model: str = "CMEMS"
+    model_type: str = "CMEMS"
+    dataset_id: str = "cmems_mod_bal_phy_anfc_PT1H-i_202411"
+    max_drift: float = 100.0  # max drift in km expected float can undergo
     Q: np.ndarray = field(default_factory=lambda: np.zeros(4))  # process noise diagonal [x, y, bx, by], from config.json's process_noise_diagonal
+
+
