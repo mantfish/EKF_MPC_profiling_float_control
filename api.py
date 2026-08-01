@@ -15,6 +15,7 @@ from main import surface_trigger
 from main import update_state as run_update_state
 
 from data_handler import *
+from data_handler import _float_dir
 from helpers import Location, EstimatedState
 from visulisation import build_visualization_html
 
@@ -29,7 +30,7 @@ app = FastAPI(
 
 def _configure_float_logging(float_id: int, action_name: str) -> tuple[logging.Handler, Path]:
     "Adds a per-request FileHandler under the float's own log directory."
-    log_dir = Path("floats") / str(float_id) / "logs"
+    log_dir = _float_dir(float_id) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{action_name}_{float_id}_on_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}.log"
     handler = logging.FileHandler(log_path)
@@ -124,7 +125,7 @@ def initialise_float_core(config_json: dict, bathymetry_bytes: bytes, starting_c
             ),
         )
 
-    float_dir = Path("floats") / str(float_id)
+    float_dir = _float_dir(float_id)
     float_dir.mkdir(parents=True, exist_ok=True)
 
     bathymetry_path = float_dir / "bathymetry.nc"
@@ -232,7 +233,7 @@ async def update_config(config_file: UploadFile = File(...)) -> bool:
     # Validate before touching disk — raises if malformed/missing keys
     config_from_dict(config_json, float_id)
 
-    config_path = Path("floats") / str(float_id) / "config.json"
+    config_path = _float_dir(float_id) / "config.json"
     with open(config_path, "wb") as f:
         f.write(config_contents)
 

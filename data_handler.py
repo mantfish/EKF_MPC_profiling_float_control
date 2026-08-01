@@ -40,11 +40,11 @@ def check_if_float_exists(float_id: int) -> bool:
 
 def read_json(file_path: str | Path) -> Any:
     "Reads and parses an arbitrary JSON file"
-    try:
-        with open(file_path, "r") as f:
+    with open(file_path, "r") as f:
+        try:
             return json.load(f)
-    except:
-        raise TypeError("The file is not in .json format")
+        except json.JSONDecodeError:
+            raise TypeError("The file is not in .json format")
 
 
 def config_from_dict(config_json: dict, float_id: int) -> Config:
