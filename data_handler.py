@@ -32,7 +32,7 @@ MAX_DRIFT = 100 # max drift in km expected float can undergo
 
 
 def _float_dir(float_id: int) -> Path:
-    return DATA_ROOT / "floats" / str(float_id)
+    return DATA_ROOT / str(float_id)
 
 def check_if_float_exists(float_id: int) -> bool:
     return _float_dir(float_id).is_dir()
