@@ -17,6 +17,10 @@ from scipy.interpolate import RegularGridInterpolator
 
 from helpers import Config, ControlAction, EstimatedState, Location, Region
 
+import os
+
+DATA_ROOT = Path(os.environ.get("DATA_ROOT", "floats"))
+
 
 CMEMS_DEPTH_MAX  = 200.0
 CMEMS_TIME_PRIOR = 12
@@ -28,7 +32,7 @@ MAX_DRIFT = 100 # max drift in km expected float can undergo
 
 
 def _float_dir(float_id: int) -> Path:
-    return Path("floats") / str(float_id)
+    return DATA_ROOT / "floats" / str(float_id)
 
 def check_if_float_exists(float_id: int) -> bool:
     return _float_dir(float_id).is_dir()
@@ -409,7 +413,9 @@ def row_to_state(row: pd.Series) -> EstimatedState:
         z=row["z"],
         bx=row["bx"],
         by=row["by"],
-        Q=np.array([row["Q_x"], row["Q_y"], row["Q_bx"], row["Q_by"]], dtype=float),
+        # Older estimated_state.csv files predate the Q_x/Q_y/Q_bx/Q_by columns entirely;
+        # fall back to zeros (matching EstimatedState.Q's own default) rather than KeyError.
+        Q=np.array([row.get("Q_x", 0.0), row.get("Q_y", 0.0), row.get("Q_bx", 0.0), row.get("Q_by", 0.0)], dtype=float),
         P=np.array(list(row["P"]), dtype=float),
     )
 
