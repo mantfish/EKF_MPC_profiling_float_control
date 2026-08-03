@@ -21,6 +21,23 @@ from visulisation import build_visualization_html
 
 logging.basicConfig(level=logging.INFO)
 
+
+def _parse_json_object(raw: bytes, field_name: str) -> dict:
+    "Parses raw bytes as JSON, rejecting anything whose top level isn't an object."
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST, detail=f"Invalid JSON in {field_name}: {e}"
+        )
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST,
+            detail=f"{field_name} must be a JSON object, got {type(parsed).__name__}",
+        )
+    return parsed
+
+
 app = FastAPI(
     title="EKF MPC Profiling float controller",
     description="API for making prediction of float",
@@ -57,7 +74,7 @@ async def return_action(file: UploadFile = File(...)) -> JSONResponse:
         )
 
     contents = await file.read()
-    float_id = json.loads(contents)["float_id"]
+    float_id = _parse_json_object(contents, "file")["float_id"]
     does_float_exists = check_if_float_exists(float_id)
     if does_float_exists is False:
         raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Float is not in database")
@@ -198,9 +215,9 @@ async def initialise_float_endpoint(
             detail=f"Invalid file format for {bathymetry_file.filename}. Please upload a .nc file.",
         )
 
-    config_json = json.loads(await config_file.read())
+    config_json = _parse_json_object(await config_file.read(), "config_file")
     bathymetry_bytes = await bathymetry_file.read()
-    starting_contents = json.loads(await starting_state_and_action.read())
+    starting_contents = _parse_json_object(await starting_state_and_action.read(), "starting_state_and_action")
 
     initialise_float_core(config_json, bathymetry_bytes, starting_contents)
 
@@ -216,7 +233,7 @@ async def update_config(config_file: UploadFile = File(...)) -> bool:
         )
 
     config_contents = await config_file.read()
-    config_json = json.loads(config_contents)
+    config_json = _parse_json_object(config_contents, "config_file")
     float_id = config_json["float_id"]
 
     if not check_if_float_exists(float_id):
