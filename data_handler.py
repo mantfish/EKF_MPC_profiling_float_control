@@ -109,21 +109,10 @@ def download_cmems_data_around_float(
 ) -> xr.Dataset:
 
     username, password = _cmems_credentials()
-
-    # Temporary diagnostic override: force a tiny bounding box to test whether
-    # request area size is what's pushing memory over the instance's cap. Set
-    # DEBUG_CMEMS_MAX_DRIFT_KM on the Render service to enable; unset it to go
-    # back to each float's configured max_drift.
-    debug_max_drift_km = os.environ.get("DEBUG_CMEMS_MAX_DRIFT_KM")
-    if debug_max_drift_km:
-        max_drift = float(debug_max_drift_km)
-        logger.warning(
-            "DEBUG_CMEMS_MAX_DRIFT_KM override active: requesting a %.1fkm box instead of the configured %.1fkm",
-            max_drift, config.max_drift or MAX_DRIFT,
-        )
+    if config.max_drift:
+        bbox = define_region_aroung_float(location, config.max_drift)
     else:
-        max_drift = config.max_drift or MAX_DRIFT
-    bbox = define_region_aroung_float(location, max_drift)
+        bbox = define_region_aroung_float(location, MAX_DRIFT)
 
     start_datetime = pd.Timestamp(earliest_time) - pd.Timedelta(hours=CMEMS_TIME_PRIOR)
 
