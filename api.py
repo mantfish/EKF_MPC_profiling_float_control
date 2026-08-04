@@ -265,3 +265,20 @@ async def update_config(config_file: UploadFile = File(...)) -> bool:
         f.write(config_contents)
 
     return True
+
+@app.post("/get_last_surfacing")
+async def get_last_surfacing(float_id: int) -> dict:
+    if not check_if_float_exists(float_id):
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail=f"Float {float_id} not found.",
+        )
+
+    last_surfacing = read_last_surfacing(float_id)
+    if last_surfacing is None:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail=f"No surfacing data found for float {float_id}.",
+        )
+
+    return last_surfacing

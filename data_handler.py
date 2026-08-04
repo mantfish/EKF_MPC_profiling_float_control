@@ -465,3 +465,15 @@ def dict_to_state(state_dict: dict) -> EstimatedState:
         by=state_dict["by"],
         P=np.array(state_dict["P"], dtype=float),
     )
+
+def get_latest_surfacing_and_action(float_id: int) -> dict:
+    """Returns the last surfacing/action entry from surfacing_action_log.json."""
+    log_path = _float_dir(float_id) / "surfacing_action_log.json"
+    if not log_path.exists():
+        raise FileNotFoundError(f"Surfacing and action log file does not exist for float ID: {float_id}")
+
+    surfacing_and_action_log = read_json(log_path)
+    if not surfacing_and_action_log:
+        raise ValueError(f"Surfacing and action log is empty for float ID: {float_id}")
+
+    return surfacing_and_action_log[-1]
