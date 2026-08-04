@@ -10,6 +10,7 @@ from scipy.interpolate import RegularGridInterpolator
 
 from control import KFMPC, compute_jacobian
 from data_handler import *
+from data_handler import _log_memory
 from helpers import ControlAction, EstimatedState, Location
 
 logger = logging.getLogger(__name__)
@@ -142,8 +143,16 @@ def update_state(
 
     logger.info("The next surfacing time is : %s", simulation_end_time)
 
+    # Bathymetry files are basin-wide (e.g. the whole Baltic), but a float only
+    # ever operates within max_drift of its last surfaced location, so crop to
+    # that same box before materializing it — mirrors the CMEMS request below.
+    float_region = define_region_aroung_float(last_surfaced_location, config.max_drift or MAX_DRIFT)
+
+    _log_memory("before load_bathymetry")
     bathy_ds = load_bathymetry(config.data_dir / "bathymetry.nc")
-    bathy_interp = build_bathymetry_interpolator(bathy_ds)
+    _log_memory("after load_bathymetry (lazy open)")
+    bathy_interp = build_bathymetry_interpolator(bathy_ds, bbox=float_region)
+    _log_memory("after build_bathymetry_interpolator (cropped to float_region before materializing)")
 
 
     if config.model_type != "CMEMS":

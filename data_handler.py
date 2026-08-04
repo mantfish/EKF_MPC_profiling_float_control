@@ -300,7 +300,7 @@ def load_bathymetry(bathymetry_path: str | Path) -> xr.Dataset:
     "Loads a GEBCO-style bathymetry NetCDF file (see build_bathymetry_interpolator)."
     return xr.open_dataset(bathymetry_path)
 
-def build_bathymetry_interpolator(bathy_ds: xr.Dataset) -> Callable[[float, float], float]:
+def build_bathymetry_interpolator(bathy_ds: xr.Dataset, bbox: Region | None = None) -> Callable[[float, float], float]:
     """Build a fast scipy interpolator for seabed depth from the GEBCO dataset.
 
     Returns a callable ``f(lat, lon) -> depth_m`` that is orders of magnitude
@@ -310,6 +310,11 @@ def build_bathymetry_interpolator(bathy_ds: xr.Dataset) -> Callable[[float, floa
     ----------
     bathy_ds:
         Dataset from :func:`load_bathymetry`.
+    bbox:
+        If given, crops to this region before materializing. Bathymetry files
+        are basin-wide (tens of millions of grid points); without this, the
+        whole grid gets pulled into memory even though only a small area
+        around the float is ever queried.
 
     Returns
     -------
@@ -317,6 +322,12 @@ def build_bathymetry_interpolator(bathy_ds: xr.Dataset) -> Callable[[float, floa
         ``f(lat, lon) -> float`` — seabed depth in metres, positive down.
         Returns ``0.0`` for land (positive GEBCO elevation).
     """
+    if bbox is not None:
+        bathy_ds = bathy_ds.sel(
+            lat=slice(bbox.latitude_min, bbox.latitude_max),
+            lon=slice(bbox.longitude_min, bbox.longitude_max),
+        )
+
     lats = bathy_ds.lat.values.astype(np.float64)
     lons = bathy_ds.lon.values.astype(np.float64)
     elev = bathy_ds["elevation"].values.astype(np.float64)  # (lat, lon)
