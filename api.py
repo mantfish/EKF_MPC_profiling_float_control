@@ -66,7 +66,7 @@ def _configure_float_logging(float_id: int, action_name: str) -> tuple[logging.H
     return handler, log_path
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def healthcheck() -> dict[str, str]:
     return {"status": "ok", "message": "API is running and ready to accept requests."}
 

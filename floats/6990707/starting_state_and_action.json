@@ -1,0 +1,10 @@
+{
+    "time": "2026-07-25T23:48:00",
+    "location": {
+        "latitude": 54.960618333333336,
+        "longitude": 15.637018333333334
+    },
+    "depth": 0.0,
+    "phase": "descending",
+    "action_name": "Park on bottom for 49.0 hours"
+}
