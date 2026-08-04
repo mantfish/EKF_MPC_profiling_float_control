@@ -105,7 +105,9 @@ def surface_trigger(email_file: str) -> str:
 
     write_surfacing_action_log(float_id, selected_action_name, time_of_transmission, location, estimated_surface_state, innovated_state, nis, innovation, action_cost)
 
-    update_state(float_id)  # Update the state after the innovation step
+    # Update the state after the innovation step, reusing the forecast already
+    # downloaded above instead of triggering a second full CMEMS download.
+    update_state(float_id, forecast_ds=forecast_ds)
 
     return selected_action_name
 

@@ -154,6 +154,13 @@ def download_cmems_data_around_float(
         ds.load()  # materialize into memory before tmp_dir (and the file in it) is deleted
         _log_memory("after ds.load() into memory")
 
+        # CMEMS's packed-int16-with-scale-factor storage gets CF-decoded to float64
+        # by default, which is far more precision than an ocean current velocity
+        # needs. Downcast to float32 to roughly halve this dataset's memory footprint.
+        for var in ("uo", "vo"):
+            ds[var] = ds[var].astype(np.float32, copy=False)
+        _log_memory("after downcasting uo/vo to float32")
+
     first_time = ds.time[0].values
     last_time = ds.time[-1].values
 
