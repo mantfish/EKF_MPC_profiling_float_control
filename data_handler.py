@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import os
+import resource
 import tempfile
 from collections.abc import Callable
 from datetime import datetime
@@ -29,6 +30,12 @@ KM_PER_DEG_LAT = 111.32
 logger = logging.getLogger(__name__)
 
 MAX_DRIFT = 100 # max drift in km expected float can undergo
+
+
+def _log_memory(stage: str) -> None:
+    "Logs the process's peak resident set size so far (Linux: ru_maxrss is in KB), to locate where memory goes on memory-capped instances."
+    peak_rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    logger.info("[memory] %s: peak RSS so far = %.1f MB", stage, peak_rss_kb / 1024)
 
 
 def _float_dir(float_id: int) -> Path:
@@ -129,7 +136,9 @@ def download_cmems_data_around_float(
         kwargs["output_directory"] = tmp_dir
         tmp_path = os.path.join(tmp_dir, "cmems_subset.nc")
 
+        _log_memory("before copernicusmarine.subset()")
         copernicusmarine.subset(**kwargs)
+        _log_memory("after copernicusmarine.subset() (output file written, not yet opened)")
 
         if not os.path.exists(tmp_path):
             raise RuntimeError(
@@ -139,9 +148,11 @@ def download_cmems_data_around_float(
             )
 
         logger.info("CMEMS subset downloaded on %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        logger.info("CMEMS subset file size: %.1f MB", os.path.getsize(tmp_path) / (1024 * 1024))
 
         ds = xr.open_dataset(tmp_path)
         ds.load()  # materialize into memory before tmp_dir (and the file in it) is deleted
+        _log_memory("after ds.load() into memory")
 
     first_time = ds.time[0].values
     last_time = ds.time[-1].values

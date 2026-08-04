@@ -1,5 +1,12 @@
-import json
 import logging
+import resource
+
+# Captured before the heavy scientific/CMEMS stack is imported below, so the
+# gap between this and the post-import reading isolates the import cost from
+# a Render instance's memory cap (diagnosing repeated OOM restarts).
+_pre_import_rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+import json
 import os
 import tempfile
 from datetime import datetime
@@ -15,11 +22,14 @@ from main import surface_trigger
 from main import update_state as run_update_state
 
 from data_handler import *
-from data_handler import _float_dir
+from data_handler import _float_dir, _log_memory
 from helpers import Location, EstimatedState
 from visulisation import build_visualization_html
 
 logging.basicConfig(level=logging.INFO)
+
+logging.info("[memory] before heavy imports: %.1f MB", _pre_import_rss_kb / 1024)
+_log_memory("after heavy imports (app startup)")
 
 
 def _parse_json_object(raw: bytes, field_name: str) -> dict:
