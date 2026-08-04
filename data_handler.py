@@ -466,7 +466,7 @@ def dict_to_state(state_dict: dict) -> EstimatedState:
         P=np.array(state_dict["P"], dtype=float),
     )
 
-def get_latest_surfacing_and_action(float_id: int) -> dict:
+def read_last_surfacing(float_id: int) -> dict:
     """Returns the last surfacing/action entry from surfacing_action_log.json."""
     log_path = _float_dir(float_id) / "surfacing_action_log.json"
     if not log_path.exists():
