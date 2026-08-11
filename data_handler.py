@@ -54,6 +54,17 @@ def read_json(file_path: str | Path) -> Any:
             raise TypeError("The file is not in .json format")
 
 
+def _resolve_within_data_root(file_name: str) -> Path:
+    "Resolves file_name under DATA_ROOT, rejecting any path that escapes it (e.g. via '..')."
+    data_root = DATA_ROOT.resolve()
+    resolved = (data_root / file_name).resolve()
+    if resolved != data_root and data_root not in resolved.parents:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST,
+            detail=f"Invalid file_name {file_name}.",
+        )
+    return resolved
+
 def config_from_dict(config_json: dict, float_id: int) -> Config:
     return Config(
         float_id=config_json["float_id"],

@@ -22,7 +22,7 @@ from main import surface_trigger
 from main import update_state as run_update_state
 
 from data_handler import *
-from data_handler import _float_dir, _log_memory
+from data_handler import DATA_ROOT, _float_dir, _log_memory
 from helpers import Location, EstimatedState
 from visulisation import build_visualization_html
 
@@ -282,3 +282,59 @@ async def get_last_surfacing(float_id: int) -> dict:
         )
 
     return last_surfacing
+
+
+@app.post("/get_file")
+async def get_file(file_name: str):
+    file_path = _resolve_within_data_root(file_name)
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail=f"File {file_name} not found.",
+        )
+    try:
+        with open(file_path, "rb") as f:
+            file_contents = f.read()
+            logging.info(f"Read file {file_name} with size {len(file_contents)} bytes")
+    except Exception as e:
+        raise HTTPException(
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            detail=f"Error reading file {file_name}: {str(e)}, probably does not exist",
+        )
+
+
+    return JSONResponse(content={"file_name": file_name, "file_contents": file_contents.decode("latin-1")})
+
+@app.post("/update_file")
+async def update_file(float_id: int, file: UploadFile = File(...), file_name: str = None, are_you_sure: bool = False) -> bool:
+    logging.info(f"Received request to update file {file.filename} for float {float_id}")
+    if are_you_sure is False:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST,
+            detail="Are you sure you want to update this file?",
+        )
+
+    if not check_if_float_exists(float_id):
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail=f"Float {float_id} not found.",
+        )
+
+    target_name = file_name or file.filename
+    if not target_name or Path(target_name).name != target_name:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST,
+            detail=f"Invalid file_name {target_name}.",
+        )
+    old_file_path = _float_dir(float_id) / target_name
+
+    if old_file_path.is_file():
+        with open(old_file_path, "wb") as old_file:
+            old_file.write(await file.read())
+        logging.info(f"Updated file {target_name} for float {float_id}")
+    else:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail=f"File {target_name} not found for float {float_id}.",
+        )
+    return True
