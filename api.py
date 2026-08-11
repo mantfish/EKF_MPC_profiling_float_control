@@ -22,7 +22,6 @@ from main import surface_trigger
 from main import update_state as run_update_state
 
 from data_handler import *
-from data_handler import DATA_ROOT, _float_dir, _log_memory
 from helpers import Location, EstimatedState
 from visulisation import build_visualization_html
 
@@ -285,8 +284,8 @@ async def get_last_surfacing(float_id: int) -> dict:
 
 
 @app.post("/get_file")
-async def get_file(file_name: str):
-    file_path = _resolve_within_data_root(file_name)
+async def get_file(file_name: str, float_id: int = None) -> JSONResponse:
+    file_path = resolve_within_data_root(file_name, float_id)
     if not file_path.exists():
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND,
