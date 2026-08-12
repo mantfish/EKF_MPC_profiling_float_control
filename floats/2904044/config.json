@@ -2,16 +2,16 @@
     "float_id": 2904044,
     "target_lat": 57.084147833333326,
     "target_lon": 19.952452166666667,
-    "estimated_tranmission_time_hours": 0.9233333333333333,
-    "ascent_speed_m_per_s": 0.07416433430780182,
-    "descent_speed_m_per_s": 0.022581577419527404,
+    "estimated_tranmission_time_hours": 1.0833333333333333,
+    "ascent_speed_m_per_s": 0.074,
+    "descent_speed_m_per_s": 0.023,
     "bathymetry_file_name": "bathymetry.nc",
     "possible_actions": [
         {
-            "name": "Park on bottom for 74.7 hours",
-            "duration_hours": 74.67606772124572,
-            "depth_m": 189.9974397668516,
-            "action_type": "park",
+            "name": "Drift at depth for 74.4 hours",
+            "duration_hours": 74.4,
+            "depth_m": 191.34817775662282,
+            "action_type": "drift",
             "science_cost": 1.0
         }
     ],
@@ -26,10 +26,9 @@
     "max_drift": 20.0,
     "model_type": "CMEMS",
     "model_id": "cmems_mod_bal_phy_anfc_PT1H-i",
-    "process_noise_diagonal": [
-        4.0,
-        4.0,
+    "process_noise_bias": [
         6.944444444444444e-05,
         6.944444444444444e-05
-    ]
+    ],
+    "bias_decay_rate": 0.0001
 }

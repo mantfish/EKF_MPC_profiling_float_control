@@ -1,10 +1,10 @@
 {
-    "time": "2026-07-27T16:24:03",
+    "time": "2026-08-09T06:52:00",
     "location": {
-        "latitude": 57.084147833333326,
-        "longitude": 19.952452166666667
+        "latitude": 57.0398,
+        "longitude": 20.0645
     },
     "depth": 0.0,
     "phase": "descending",
-    "action_name": "Park on bottom for 74.7 hours"
+    "action_name": "Drift at depth for 74.4 hours"
 }

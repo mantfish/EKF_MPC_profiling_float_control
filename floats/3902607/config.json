@@ -13,23 +13,22 @@
     "model_type": "CMEMS",
     "model_id": "cmems_mod_bal_phy_anfc_PT1H-i",
     "max_drift": 20,
-    "estimated_tranmission_time_hours": 0.5,
+    "estimated_tranmission_time_hours": 0.7,
     "ascent_speed_m_per_s": 0.09,
     "descent_speed_m_per_s": 0.025,
-    "process_noise_diagonal": [
-        4.0,
-        4.0,
-        6.944444444444444e-05,
-        6.944444444444444e-05
-    ],
     "possible_actions": [
         {
-            "name": "Park on bottom for 115 hours",
-            "duration_hours": 115,
-            "depth_m": 1000,
+            "name": "Park on bottom for 115.2 hours",
+            "duration_hours": 115.2,
+            "depth_m": 128.6000010172526,
             "action_type": "park",
             "science_cost": 1.0
         }
     ],
-    "bathymetry_file_name": "bathymetry.nc"
+    "bathymetry_file_name": "bathymetry.nc",
+    "process_noise_bias": [
+        6.944444444444444e-05,
+        6.944444444444444e-05
+    ],
+    "bias_decay_rate": 0.0001
 }
