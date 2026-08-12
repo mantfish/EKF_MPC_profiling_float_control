@@ -28,7 +28,6 @@ from visulisation import build_visualization_html
 logging.basicConfig(level=logging.INFO)
 
 logging.info("[memory] before heavy imports: %.1f MB", _pre_import_rss_kb / 1024)
-_log_memory("after heavy imports (app startup)")
 
 
 def _parse_json_object(raw: bytes, field_name: str) -> dict:
@@ -304,36 +303,4 @@ async def get_file(file_name: str, float_id: int = None) -> JSONResponse:
 
     return JSONResponse(content={"file_name": file_name, "file_contents": file_contents.decode("latin-1")})
 
-@app.post("/update_file")
-async def update_file(float_id: int, file: UploadFile = File(...), file_name: str = None, are_you_sure: bool = False) -> bool:
-    logging.info(f"Received request to update file {file.filename} for float {float_id}")
-    if are_you_sure is False:
-        raise HTTPException(
-            status_code=HTTPStatus.BAD_REQUEST,
-            detail="Are you sure you want to update this file?",
-        )
-
-    if not check_if_float_exists(float_id):
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND,
-            detail=f"Float {float_id} not found.",
-        )
-
-    target_name = file_name or file.filename
-    if not target_name or Path(target_name).name != target_name:
-        raise HTTPException(
-            status_code=HTTPStatus.BAD_REQUEST,
-            detail=f"Invalid file_name {target_name}.",
-        )
-    old_file_path = _float_dir(float_id) / target_name
-
-    if old_file_path.is_file():
-        with open(old_file_path, "wb") as old_file:
-            old_file.write(await file.read())
-        logging.info(f"Updated file {target_name} for float {float_id}")
-    else:
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND,
-            detail=f"File {target_name} not found for float {float_id}.",
-        )
-    return True
+# TODO add change action / add new

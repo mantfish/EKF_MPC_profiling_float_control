@@ -123,6 +123,7 @@ class KFMPC:
 
 
 def compute_jacobian(
+    tau: float,
     x: float,
     y: float,
     z: float,
@@ -147,6 +148,6 @@ def compute_jacobian(
     return np.array([
         [(u_xp - u_xm) / (2 * eps), (u_yp - u_ym) / (2 * eps), 1.0, 0.0],
         [(v_xp - v_xm) / (2 * eps), (v_yp - v_ym) / (2 * eps), 0.0, 1.0],
-        [0.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, -1/tau, 0.0],
+        [0.0, 0.0, 0.0, -1/tau],
     ])

@@ -17,7 +17,7 @@ class Region:
     longitude_min: float
     longitude_max: float
 
-Phase = Literal["ascending", "descending", "parking", "on_seabed", "communicating"]
+Phase = Literal["ascending", "descending", "drifting", "grounded", "communicating"]
 
 @dataclass
 class EstimatedState:
@@ -35,9 +35,10 @@ class EstimatedState:
     
 @dataclass
 class ControlAction:
-    parking_depth: float        # metres
+    drifting_depth: float        # metres
     duration_hours: float       # hours
     science_cost: float         # 0 (no science) to 1 (full science)
+    grounding: bool # True if the action is a grounding action, False otherwise
 
 @dataclass
 class SurfacingLog:
@@ -68,6 +69,7 @@ class Config:
     model_type: str = "CMEMS"
     dataset_id: str = "cmems_mod_bal_phy_anfc_PT1H-i_202411"
     max_drift: float = 100.0  # max drift in km expected float can undergo
-    Q: np.ndarray = field(default_factory=lambda: np.zeros(4))  # process noise diagonal [x, y, bx, by], from config.json's process_noise_diagonal
+    Q: np.ndarray = field(default_factory=lambda: np.zeros(4))  # process noise diagonal [x, y, bx, by]: zero on position, from config.json's process_noise_bias on bias
+    bias_decay_rate: float | None = None  # bias mean-reversion time-constant tau (seconds), from config.json's bias_decay_rate
 
 

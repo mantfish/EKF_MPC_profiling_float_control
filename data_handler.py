@@ -31,13 +31,6 @@ logger = logging.getLogger(__name__)
 
 MAX_DRIFT = 100 # max drift in km expected float can undergo
 
-
-def _log_memory(stage: str) -> None:
-    "Logs the process's peak resident set size so far (Linux: ru_maxrss is in KB), to locate where memory goes on memory-capped instances."
-    peak_rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    logger.info("[memory] %s: peak RSS so far = %.1f MB", stage, peak_rss_kb / 1024)
-
-
 def _float_dir(float_id: int) -> Path:
     return DATA_ROOT / str(float_id)
 
@@ -87,7 +80,8 @@ def config_from_dict(config_json: dict, float_id: int) -> Config:
         model_type=config_json.get("model_type", "CMEMS"),
         dataset_id=config_json.get("model_id", "cmems_mod_bal_phy_anfc_PT1H-i_202411"),
         max_drift=config_json.get("max_drift", MAX_DRIFT),
-        Q=np.array(config_json["process_noise_diagonal"]),
+        Q=np.concatenate([np.array([0, 0]), np.array(config_json["process_noise_bias"])]),
+        bias_decay_rate=config_json.get("bias_decay_rate"),
     )
 
 
@@ -147,9 +141,7 @@ def download_cmems_data_around_float(
         kwargs["output_directory"] = tmp_dir
         tmp_path = os.path.join(tmp_dir, "cmems_subset.nc")
 
-        _log_memory("before copernicusmarine.subset()")
         copernicusmarine.subset(**kwargs)
-        _log_memory("after copernicusmarine.subset() (output file written, not yet opened)")
 
         if not os.path.exists(tmp_path):
             raise RuntimeError(
@@ -163,14 +155,12 @@ def download_cmems_data_around_float(
 
         ds = xr.open_dataset(tmp_path)
         ds.load()  # materialize into memory before tmp_dir (and the file in it) is deleted
-        _log_memory("after ds.load() into memory")
 
         # CMEMS's packed-int16-with-scale-factor storage gets CF-decoded to float64
         # by default, which is far more precision than an ocean current velocity
         # needs. Downcast to float32 to roughly halve this dataset's memory footprint.
         for var in ("uo", "vo"):
             ds[var] = ds[var].astype(np.float32, copy=False)
-        _log_memory("after downcasting uo/vo to float32")
 
     first_time = ds.time[0].values
     last_time = ds.time[-1].values
@@ -290,9 +280,10 @@ def get_action(action_name: str, config: Config) -> ControlAction:
     for action in config.possible_actions:
         if action["name"] == action_name:
             return ControlAction(
-                parking_depth=action["depth_m"],
+                drifting_depth=action["depth_m"],
                 duration_hours=action["duration_hours"],
                 science_cost=action["science_cost"],
+                grounding=action.get("grounding", False),
             )
     raise ValueError(f"Action '{action_name}' not found in possible actions.")
 
@@ -331,13 +322,28 @@ def build_bathymetry_interpolator(bathy_ds: xr.Dataset, bbox: Region | None = No
     lats = bathy_ds.lat.values.astype(np.float64)
     lons = bathy_ds.lon.values.astype(np.float64)
     elev = bathy_ds["elevation"].values.astype(np.float64)  # (lat, lon)
+    lat_min, lat_max = lats.min(), lats.max()
+    lon_min, lon_max = lons.min(), lons.max()
 
     interp = RegularGridInterpolator(
         (lats, lons), elev, method="linear", bounds_error=False, fill_value=np.nan,
     )
 
+    logged_out_of_bounds = False
+
     def query(lat: float, lon: float) -> float:
-        depth = float(interp([[lat, lon]])[0]) * -1.0
+        nonlocal logged_out_of_bounds
+        lat_c = np.clip(lat, lat_min, lat_max)
+        lon_c = np.clip(lon, lon_min, lon_max)
+        if not logged_out_of_bounds and (lat_c != lat or lon_c != lon):
+            logger.warning(
+                "Bathymetry query (%.4f, %.4f) outside grid bounds lat[%.4f, %.4f] "
+                "lon[%.4f, %.4f]; clamping to nearest edge value (further out-of-bounds "
+                "queries in this run will not be logged).",
+                lat, lon, lat_min, lat_max, lon_min, lon_max,
+            )
+            logged_out_of_bounds = True
+        depth = float(interp([[lat_c, lon_c]])[0]) * -1.0
         return max(depth, 0.0)
 
     return query
@@ -409,6 +415,19 @@ def query_uv(
     z_c = np.clip(z, bounds["z_min"], bounds["z_max"])
     lat_c = np.clip(lat, bounds["lat_min"], bounds["lat_max"])
     lon_c = np.clip(lon, bounds["lon_min"], bounds["lon_max"])
+
+    if not bounds.get("_out_of_bounds_logged") and (
+        t_c != t_s or z_c != z or lat_c != lat or lon_c != lon
+    ):
+        logger.warning(
+            "UV query (t=%s, z=%.1f, lat=%.4f, lon=%.4f) outside forecast bounds "
+            "t[%s, %s] z[%.1f, %.1f] lat[%.4f, %.4f] lon[%.4f, %.4f]; clamping to "
+            "nearest edge value (further out-of-bounds queries in this run will not be logged).",
+            t, z, lat, lon,
+            bounds["t_min"], bounds["t_max"], bounds["z_min"], bounds["z_max"],
+            bounds["lat_min"], bounds["lat_max"], bounds["lon_min"], bounds["lon_max"],
+        )
+        bounds["_out_of_bounds_logged"] = True
 
     point = [[t_c, z_c, lat_c, lon_c]]
     u = float(u_interp(point)[0])

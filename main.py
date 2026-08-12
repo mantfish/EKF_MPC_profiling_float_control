@@ -10,7 +10,6 @@ from scipy.interpolate import RegularGridInterpolator
 
 from control import KFMPC, compute_jacobian
 from data_handler import *
-from data_handler import _log_memory
 from helpers import ControlAction, EstimatedState, Location
 
 logger = logging.getLogger(__name__)
@@ -148,11 +147,8 @@ def update_state(
     # that same box before materializing it — mirrors the CMEMS request below.
     float_region = define_region_aroung_float(last_surfaced_location, config.max_drift or MAX_DRIFT)
 
-    _log_memory("before load_bathymetry")
     bathy_ds = load_bathymetry(config.data_dir / "bathymetry.nc")
-    _log_memory("after load_bathymetry (lazy open)")
     bathy_interp = build_bathymetry_interpolator(bathy_ds, bbox=float_region)
-    _log_memory("after build_bathymetry_interpolator (cropped to float_region before materializing)")
 
 
     if config.model_type != "CMEMS":
@@ -227,10 +223,14 @@ def update_state(
                 estimated_future_state.phase = "descending"
 
         if estimated_future_state.phase == "descending":
-            if estimated_future_state.depth >= action.parking_depth or estimated_future_state.depth >= bottom_depth:
-                estimated_future_state.phase = "parking"
+            if estimated_future_state.depth >= action.drifting_depth and action.grounding is False: 
+                estimated_future_state.phase = "drifting"
+                if estimated_future_state.depth > bottom_depth:
+                    logger.warning("Float %s is drifting at depth %.2f m, which is below the bathymetry depth %.2f m at location (%f, %f).", float_id, estimated_future_state.depth, bottom_depth, lat, lon)
+            if estimated_future_state.depth >= bottom_depth and action.grounding is True:
+                estimated_future_state.phase = "grounded"
 
-        if estimated_future_state.phase == "parking":
+        if estimated_future_state.phase == "drifting":
             if estimated_future_state.time > simulation_end_time - timedelta(seconds=estimated_future_state.depth / config.ascent_speed_m_per_s):
                 estimated_future_state.phase = "ascending"
 
@@ -249,17 +249,23 @@ def update_state(
         else:
             dt = config.parking_dt
 
-        # Horizontal drift
-        parked_on_bottom = estimated_future_state.phase == "parking" and estimated_future_state.depth >= bottom_depth
-        if not parked_on_bottom:
+        # TODO implement that if the float runs into ground during drifting it stays?
+        if not estimated_future_state.phase == "grounded":
             u, v = query_uv(u_interp, v_interp, bounds, estimated_future_state.time, estimated_future_state.depth, estimated_future_state.location.latitude, estimated_future_state.location.longitude)
-            F = compute_jacobian(estimated_future_state.x, estimated_future_state.y, estimated_future_state.depth, estimated_future_state.time,
+            F = compute_jacobian(config.bias_decay_rate, estimated_future_state.x, estimated_future_state.y, estimated_future_state.depth, estimated_future_state.time,
                         u_interp, v_interp, bounds, start_lat, start_lon)  # pre-step
-            # Process noise on position only (first 2 components of Q)
+            # Process noise on bias only, not position (see config.Q / process_noise_bias)
             estimated_future_state.x += (u + estimated_future_state.bx) * dt
             estimated_future_state.y += (v + estimated_future_state.by) * dt
             Phi = np.eye(4) + F * dt
             estimated_future_state.P = Phi @ estimated_future_state.P @ Phi.T + np.diag(config.Q) * dt
+        else:
+            F = np.zeros((4, 4))
+            F[2, 2] = -1 / config.bias_decay_rate
+            F[3, 3] = -1 / config.bias_decay_rate
+            Phi = np.eye(4) + F * dt
+            estimated_future_state.P = Phi @ estimated_future_state.P @ Phi.T + np.diag(config.Q) * dt
+
 
         estimated_future_state.time += timedelta(seconds=dt)
 
