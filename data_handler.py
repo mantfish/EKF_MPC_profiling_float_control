@@ -1,4 +1,3 @@
-import ast
 import json
 import logging
 import math
@@ -268,11 +267,16 @@ def read_state(float_id: int) -> pd.DataFrame:
         return pd.DataFrame()
 
     state_df = pd.read_csv(state_file_path, parse_dates=["time"])
-    state_df["P"] = state_df["P"].apply(ast.literal_eval)
+    # json, not ast.literal_eval: if a nan/inf ever slips into P, JSON still
+    # round-trips it (Python's json accepts NaN/Infinity by default) instead of
+    # permanently bricking every future read of this float's history.
+    state_df["P"] = state_df["P"].apply(json.loads)
     return state_df
 
 def write_state(float_id: int, state_df: pd.DataFrame) -> None:
     state_file_path = _float_dir(float_id) / "estimated_state.csv"
+    state_df = state_df.copy()
+    state_df["P"] = state_df["P"].apply(json.dumps)
     state_df.to_csv(state_file_path, index=False)
     logger.info("Estimated state history written to file for float ID: %s", float_id)
 
@@ -344,6 +348,10 @@ def build_bathymetry_interpolator(bathy_ds: xr.Dataset, bbox: Region | None = No
             )
             logged_out_of_bounds = True
         depth = float(interp([[lat_c, lon_c]])[0]) * -1.0
+        if math.isnan(depth):
+            # max(nan, 0.0) would silently return nan here (any comparison
+            # against NaN is False, so Python's max() keeps the first arg).
+            depth = 0.0
         return max(depth, 0.0)
 
     return query

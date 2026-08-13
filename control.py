@@ -140,14 +140,43 @@ def compute_jacobian(
         lat, lon = xy_to_latlon(xi, yi, start_lat, start_lon)
         return query_uv(interp_u, interp_v, bounds, t, z, lat, lon)
 
-    u_xp, v_xp = qv(x + eps, y)
-    u_xm, v_xm = qv(x - eps, y)
-    u_yp, v_yp = qv(x, y + eps)
-    u_ym, v_ym = qv(x, y - eps)
+    def in_bounds(xi: float, yi: float) -> bool:
+        lat, lon = xy_to_latlon(xi, yi, start_lat, start_lon)
+        return (bounds["lat_min"] <= lat <= bounds["lat_max"]
+                and bounds["lon_min"] <= lon <= bounds["lon_max"])
+
+    # A centered difference across a query_uv() clamp boundary compares a real
+    # interior value against a clamped edge value, producing a spurious step
+    # divided by 2*eps rather than a physical gradient. Prefer a centered
+    # difference when both samples are real; fall back to one-sided when only
+    # one side is; fall back to zero shear when the window is narrower than
+    # `eps` in that direction (e.g. a tight max_drift box on a long action).
+    u0, v0 = qv(x, y)
+
+    def directional(axis: str) -> tuple[float, float]:
+        plus = (x + eps, y) if axis == "x" else (x, y + eps)
+        minus = (x - eps, y) if axis == "x" else (x, y - eps)
+        plus_ok, minus_ok = in_bounds(*plus), in_bounds(*minus)
+        if plus_ok and minus_ok:
+            up, vp = qv(*plus)
+            um, vm = qv(*minus)
+            return (up - um) / (2 * eps), (vp - vm) / (2 * eps)
+        if plus_ok:
+            up, vp = qv(*plus)
+            return (up - u0) / eps, (vp - v0) / eps
+        if minus_ok:
+            um, vm = qv(*minus)
+            return (u0 - um) / eps, (v0 - vm) / eps
+        logger.warning("compute_jacobian: forecast window narrower than eps=%.0fm at "
+                        "(x=%.0f, y=%.0f); assuming zero shear on %s axis.", eps, x, y, axis)
+        return 0.0, 0.0
+
+    du_dx, dv_dx = directional("x")
+    du_dy, dv_dy = directional("y")
 
     return np.array([
-        [(u_xp - u_xm) / (2 * eps), (u_yp - u_ym) / (2 * eps), 1.0, 0.0],
-        [(v_xp - v_xm) / (2 * eps), (v_yp - v_ym) / (2 * eps), 0.0, 1.0],
+        [du_dx, du_dy, 1.0, 0.0],
+        [dv_dx, dv_dy, 0.0, 1.0],
         [0.0, 0.0, -1/tau, 0.0],
         [0.0, 0.0, 0.0, -1/tau],
     ])
