@@ -4,7 +4,7 @@
     "target_lon": 15.637018333333334,
     "estimated_tranmission_time_hours": 0.8,
     "ascent_speed_m_per_s": 0.046,
-    "descent_speed_m_per_s": 0.020,
+    "descent_speed_m_per_s": 0.02,
     "bathymetry_file_name": "bathymetry.nc",
     "possible_actions": [
         {
@@ -30,5 +30,5 @@
         6.944444444444444e-05,
         6.944444444444444e-05
     ],
-    "bias_decay_rate": 0.0001
+    "bias_decay_rate": 432000
 }

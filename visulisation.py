@@ -197,4 +197,4 @@ def build_visualization_html(float_id: int, n_sigma: float = 2.0, max_frames: in
         height=800,
     )
 
-    return fig.to_html(full_html=True, include_plotlyjs=True)
+    return fig.to_html(full_html=True, include_plotlyjs="cdn")

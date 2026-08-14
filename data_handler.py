@@ -49,7 +49,8 @@ def read_json(file_path: str | Path) -> Any:
 def resolve_within_data_root(file_name: str, float_id: int = None) -> Path:
     "Resolves file_name under DATA_ROOT, rejecting any path that escapes it (e.g. via '..')."
     data_root = DATA_ROOT.resolve()
-    resolved = (data_root / float_id / file_name).resolve()
+    base = data_root / str(float_id) if float_id is not None else data_root
+    resolved = (base / file_name).resolve()
     if resolved != data_root and data_root not in resolved.parents:
         raise HTTPException(
             status_code=HTTPStatus.BAD_REQUEST,
