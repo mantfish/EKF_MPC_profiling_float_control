@@ -8,10 +8,10 @@
     "bathymetry_file_name": "bathymetry.nc",
     "possible_actions": [
         {
-            "name": "Park on bottom for 48.0 hours",
+            "name": "Drift at depth for 48.0 hours",
             "duration_hours": 48.0,
             "depth_m": 63.58571297781808,
-            "action_type": "park",
+            "action_type": "drift",
             "science_cost": 1.0
         }
     ],
