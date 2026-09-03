@@ -18,10 +18,10 @@
     "descent_speed_m_per_s": 0.025,
     "possible_actions": [
         {
-            "name": "Drift at depth for 115.2 hours",
+            "name": "Park on bottom for 115.2 hours",
             "duration_hours": 115.2,
             "depth_m": 128.6000010172526,
-            "action_type": "drift",
+            "action_type": "park",
             "science_cost": 1.0
         }
     ],

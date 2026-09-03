@@ -27,16 +27,6 @@ def _ellipse_latlon(x: float, y: float, P: list, n_sigma: float, target_lat: flo
     return lats, lons
 
 
-def _map_center_and_zoom(lats: list, lons: list) -> tuple[dict, float]:
-    "Center + zoom for go.Scattermap that fits all points, with a 1-degree margin."
-    lat_min, lat_max = min(lats) - 1, max(lats) + 1
-    lon_min, lon_max = min(lons) - 1, max(lons) + 1
-    center = {"lat": (lat_min + lat_max) / 2, "lon": (lon_min + lon_max) / 2}
-    span = max(lat_max - lat_min, lon_max - lon_min)
-    zoom = float(np.clip(np.log2(360 / span), 1, 14)) if span > 0 else 12.0
-    return center, zoom
-
-
 def _sampled_state_history(state_history: pd.DataFrame, max_frames: int) -> pd.DataFrame:
     if len(state_history) <= max_frames:
         return state_history
@@ -61,7 +51,7 @@ def build_visualization_html(float_id: int, n_sigma: float = 2.0, max_frames: in
     fig = make_subplots(
         rows=2, cols=3,
         specs=[
-            [{"type": "map", "rowspan": 2}, {"type": "xy"}, {"type": "xy"}],
+            [{"type": "scattergeo", "rowspan": 2}, {"type": "xy"}, {"type": "xy"}],
             [None, {"type": "xy", "colspan": 2}, None],
         ],
         column_widths=[0.5, 0.25, 0.25],
@@ -70,7 +60,7 @@ def build_visualization_html(float_id: int, n_sigma: float = 2.0, max_frames: in
 
     # --- Map: real surfacing points, colored by time ---
     fig.add_trace(
-        go.Scattermap(
+        go.Scattergeo(
             lat=surface_lats,
             lon=surface_lons,
             mode="markers",
@@ -96,12 +86,12 @@ def build_visualization_html(float_id: int, n_sigma: float = 2.0, max_frames: in
     ellipse_lats, ellipse_lons = _ellipse_latlon(first_row.x, first_row.y, first_row.P, n_sigma, config.target_lat, config.target_lon)
 
     fig.add_trace(
-        go.Scattermap(lat=[first_row.latitude], lon=[first_row.longitude], mode="markers",
-                      marker=dict(size=12, color="red", symbol="marker"), name="Estimated position"),
+        go.Scattergeo(lat=[first_row.latitude], lon=[first_row.longitude], mode="markers",
+                      marker=dict(size=12, color="red", symbol="x"), name="Estimated position"),
         row=1, col=1,
     )
     fig.add_trace(
-        go.Scattermap(lat=ellipse_lats, lon=ellipse_lons, mode="lines",
+        go.Scattergeo(lat=ellipse_lats, lon=ellipse_lons, mode="lines",
                       line=dict(color="red"), name=f"{n_sigma}-sigma uncertainty"),
         row=1, col=1,
     )
@@ -111,8 +101,14 @@ def build_visualization_html(float_id: int, n_sigma: float = 2.0, max_frames: in
 
     all_lats = surface_lats + state_history["latitude"].tolist()
     all_lons = surface_lons + state_history["longitude"].tolist()
-    map_center, map_zoom = _map_center_and_zoom(all_lats, all_lons)
-    fig.update_layout(map=dict(style="open-street-map", center=map_center, zoom=map_zoom))
+    fig.update_geos(
+        resolution=50,
+        showland=True, landcolor="rgb(235, 230, 220)",
+        showocean=True, oceancolor="rgb(220, 235, 245)",
+        showcountries=True,
+        lataxis_range=[min(all_lats) - 1, max(all_lats) + 1],
+        lonaxis_range=[min(all_lons) - 1, max(all_lons) + 1],
+    )
 
     # --- NIS over time (static) ---
     nis_time, nis = compute_nis_series(float_id)
@@ -163,8 +159,8 @@ def build_visualization_html(float_id: int, n_sigma: float = 2.0, max_frames: in
         frames.append(go.Frame(
             name=frame_name,
             data=[
-                go.Scattermap(lat=[row.latitude], lon=[row.longitude]),
-                go.Scattermap(lat=ellipse_lats, lon=ellipse_lons),
+                go.Scattergeo(lat=[row.latitude], lon=[row.longitude]),
+                go.Scattergeo(lat=ellipse_lats, lon=ellipse_lons),
             ],
             traces=[position_trace_index, ellipse_trace_index],
             layout=go.Layout(shapes=[dict(

@@ -1,6 +1,6 @@
 """Onboards the real Baltic floats tracked by the sibling model_tracker project into this
 server's EKF/MPC pipeline, each with a single possible_action mirroring the real dive cycle
-model_tracker already estimated for it (drift-at-depth mode, depth, timing, speeds).
+model_tracker already estimated for it (park mode, depth, timing, speeds).
 
 Run from anywhere; re-running is safe — floats that already exist under floats/<id>/ are skipped.
 """
@@ -48,7 +48,7 @@ def _build_config(row: pd.Series) -> dict:
     # model_tracker's cycle_hours is descent+parking only; the server's duration_hours
     # spans the whole action (descent+park+ascent), so add the ascent time back in.
     duration_hours = float(row.cycle_hours) + (float(row.target_depth) / float(row.ascent_speed_ms)) / 3600.0
-    action_name = f"Drift at depth for {duration_hours:.1f} hours"
+    action_name = f"Park on bottom for {duration_hours:.1f} hours"
 
     return {
         "float_id": int(row.float_id),
@@ -65,7 +65,7 @@ def _build_config(row: pd.Series) -> dict:
             "name": action_name,
             "duration_hours": duration_hours,
             "depth_m": float(row.target_depth),
-            "action_type": "drift",
+            "action_type": "park",
             "science_cost": 1.0,
         }],
         **DEFAULT_MPC_WEIGHTS,
