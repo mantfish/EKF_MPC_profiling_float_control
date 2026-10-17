@@ -25,14 +25,16 @@ class EstimatedState:
     location: Location
     depth: float
     phase: Phase
-    x: float = 0.0
-    y: float = 0.0
     z: float = 0.0
     bx: float = 0.0  # estimated current bias east (m/s)
     by: float = 0.0  # estimated current bias north (m/s)
     P: np.ndarray = field(default_factory=lambda: np.diag([100.0, 100.0, 1e-4, 1e-4]))
     Q: np.ndarray = field(default_factory=lambda: np.zeros(4))  # process noise diagonal [x, y, bx, by] active when this row was computed
-    
+    def update_location(self,  dx, dy):
+        self.location.latitude += dy / 111_000.0
+        self.location.longitude += dx / (111_000.0 * math.cos(math.radians(self.location.latitude)))
+    def update_bias(self,)
+
 @dataclass
 class ControlAction:
     drifting_depth: float        # metres
@@ -44,7 +46,7 @@ class ControlAction:
 class SurfacingLog:
     time: datetime
     location: Location
-    daction: ControlAction
+    action: ControlAction
 
 @dataclass
 class Config:
@@ -52,12 +54,6 @@ class Config:
     float_id: int
     target_lat: float
     target_lon: float
-    radius_std: float
-    flow_time_horizon_hours: float
-    flow_weight: float
-    distance_weight: float
-    science_weight: float
-    variance_weight: float
     vertical_dt: float
     parking_dt: float
     bathymetry_file_name: str
@@ -68,8 +64,31 @@ class Config:
     data_dir: Path
     model_type: str = "CMEMS"
     dataset_id: str = "cmems_mod_bal_phy_anfc_PT1H-i_202411"
-    max_drift: float = 100.0  # max drift in km expected float can undergo
-    Q: np.ndarray = field(default_factory=lambda: np.zeros(4))  # process noise diagonal [x, y, bx, by]: zero on position, from config.json's process_noise_bias on bias
-    bias_decay_rate: float | None = None  # bias mean-reversion time-constant tau (seconds), from config.json's bias_decay_rate
+    max_drift: float = 30.0  # max drift in km expected float can undergo
+
+@dataclass
+class OU:
+    """Ornstein-Uhlenbeck model of the forecast current bias, one process per axis.
+
+    db = -b / tau dt + sqrt(q) dW   ->   steady-state variance q * tau / 2
+    """
+    tau_e: float = 50 * 3600.0  # seconds, east bias correlation time
+    tau_n: float = 11 * 3600.0  # seconds, north bias correlation time
+    q_e: float = 3e-8           # east bias noise intensity (m^2/s^3)
+    q_n: float = 1.3e-7         # north bias noise intensity (m^2/s^3)
+
+    def get_ou_step(self, tau: float, q: float, dt: float) -> tuple[float, float]:
+        """Decay factor phi and per-step noise variance for an OU step of length dt."""
+        phi_n = np.exp(-dt / self.tau_n)
+        phi_e = np.exp(-dt / self.tau_e)
+        steady_var_n = self.q_n * self.tau_n / 2
+        steady_var_e = self.q_e * self.tau_e / 2
+
+        step_var_n = steady_var_n * (1 - phi_n ** 2)
+        step_var_e = steady_var_e * (1 - phi_e ** 2)
+
+        return (phi_e, step_var_e), (phi_n, step_var_n)
+
+
 
 

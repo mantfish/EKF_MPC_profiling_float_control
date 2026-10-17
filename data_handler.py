@@ -96,79 +96,6 @@ def read_config(float_id: int) -> Config:
     return config_from_dict(config_json, float_id)
 
 
-def _cmems_credentials() -> tuple[str, str]:
-    username = os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME")
-    password = os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD")
-    if not username or not password:
-        raise RuntimeError(
-            "Copernicus Marine credentials are not configured. Set the "
-            "COPERNICUSMARINE_SERVICE_USERNAME and COPERNICUSMARINE_SERVICE_PASSWORD "
-            "environment variables (register for free at "
-            "https://data.marine.copernicus.eu/register)."
-        )
-    return username, password
-
-
-def download_cmems_data_around_float(
-    location: Location, earliest_time: datetime, latest_time: datetime, config: Config
-) -> xr.Dataset:
-
-    username, password = _cmems_credentials()
-    if config.max_drift:
-        bbox = define_region_aroung_float(location, config.max_drift)
-    else:
-        bbox = define_region_aroung_float(location, MAX_DRIFT)
-
-    start_datetime = pd.Timestamp(earliest_time) - pd.Timedelta(hours=CMEMS_TIME_PRIOR)
-
-    kwargs: dict = dict(
-        dataset_id=config.dataset_id,
-        variables=["uo", "vo"],
-        minimum_latitude=bbox.latitude_min,
-        maximum_latitude=bbox.latitude_max,
-        minimum_longitude=bbox.longitude_min,
-        maximum_longitude=bbox.longitude_max,
-        minimum_depth=0.52,
-        maximum_depth=CMEMS_DEPTH_MAX,
-        start_datetime=start_datetime.isoformat(),
-        end_datetime=pd.Timestamp(latest_time).isoformat(),
-        output_filename="cmems_subset.nc",
-        username=username,
-        password=password,
-    )
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        kwargs["output_directory"] = tmp_dir
-        tmp_path = os.path.join(tmp_dir, "cmems_subset.nc")
-
-        copernicusmarine.subset(**kwargs)
-
-        if not os.path.exists(tmp_path):
-            raise RuntimeError(
-                "CMEMS subset download did not produce an output file. Check that "
-                "the Copernicus Marine credentials are valid and the toolbox logs "
-                "above for the underlying error."
-            )
-
-        logger.info("CMEMS subset downloaded on %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        logger.info("CMEMS subset file size: %.1f MB", os.path.getsize(tmp_path) / (1024 * 1024))
-
-        ds = xr.open_dataset(tmp_path)
-        ds.load()  # materialize into memory before tmp_dir (and the file in it) is deleted
-
-        # CMEMS's packed-int16-with-scale-factor storage gets CF-decoded to float64
-        # by default, which is far more precision than an ocean current velocity
-        # needs. Downcast to float32 to roughly halve this dataset's memory footprint.
-        for var in ("uo", "vo"):
-            ds[var] = ds[var].astype(np.float32, copy=False)
-
-    first_time = ds.time[0].values
-    last_time = ds.time[-1].values
-
-    logger.info("CMEMS subset time range: %s to %s", first_time, last_time)
-    logger.info("CMEMS subset lat range: %s to %s", ds.latitude.min().values, ds.latitude.max().values)
-
-    return ds
 
 
 def read_surfacing_and_action(float_id: int) -> dict:
@@ -245,20 +172,6 @@ def write_surfacing_action_log(
     logger.info("Surfacing action log updated for float ID: %s", float_id)
 
 
-def define_region_aroung_float(location: Location, max_drift: float) -> Region:
-    """
-    Define a region around the float's location based on the maximum drift expected."""
-    start_location = location
-    lat_min = start_location.latitude - max_drift / KM_PER_DEG_LAT
-    lon_min = start_location.longitude - max_drift / (KM_PER_DEG_LAT * np.cos(np.radians(start_location.latitude)))
-    lat_max = start_location.latitude + max_drift / KM_PER_DEG_LAT
-    lon_max = start_location.longitude + max_drift / (KM_PER_DEG_LAT * np.cos(np.radians(start_location.latitude)))
-    return Region(
-        latitude_min=lat_min,
-        latitude_max=lat_max,
-        longitude_min=lon_min,
-        longitude_max=lon_max
-    )
 
 def read_state(float_id: int) -> pd.DataFrame:
 
@@ -292,70 +205,7 @@ def get_action(action_name: str, config: Config) -> ControlAction:
             )
     raise ValueError(f"Action '{action_name}' not found in possible actions.")
 
-def load_bathymetry(bathymetry_path: str | Path) -> xr.Dataset:
-    "Loads a GEBCO-style bathymetry NetCDF file (see build_bathymetry_interpolator)."
-    return xr.open_dataset(bathymetry_path)
 
-def build_bathymetry_interpolator(bathy_ds: xr.Dataset, bbox: Region | None = None) -> Callable[[float, float], float]:
-    """Build a fast scipy interpolator for seabed depth from the GEBCO dataset.
-
-    Returns a callable ``f(lat, lon) -> depth_m`` that is orders of magnitude
-    faster than calling xarray interp on every timestep.
-
-    Parameters
-    ----------
-    bathy_ds:
-        Dataset from :func:`load_bathymetry`.
-    bbox:
-        If given, crops to this region before materializing. Bathymetry files
-        are basin-wide (tens of millions of grid points); without this, the
-        whole grid gets pulled into memory even though only a small area
-        around the float is ever queried.
-
-    Returns
-    -------
-    callable
-        ``f(lat, lon) -> float`` — seabed depth in metres, positive down.
-        Returns ``0.0`` for land (positive GEBCO elevation).
-    """
-    if bbox is not None:
-        bathy_ds = bathy_ds.sel(
-            lat=slice(bbox.latitude_min, bbox.latitude_max),
-            lon=slice(bbox.longitude_min, bbox.longitude_max),
-        )
-
-    lats = bathy_ds.lat.values.astype(np.float64)
-    lons = bathy_ds.lon.values.astype(np.float64)
-    elev = bathy_ds["elevation"].values.astype(np.float64)  # (lat, lon)
-    lat_min, lat_max = lats.min(), lats.max()
-    lon_min, lon_max = lons.min(), lons.max()
-
-    interp = RegularGridInterpolator(
-        (lats, lons), elev, method="linear", bounds_error=False, fill_value=np.nan,
-    )
-
-    logged_out_of_bounds = False
-
-    def query(lat: float, lon: float) -> float:
-        nonlocal logged_out_of_bounds
-        lat_c = np.clip(lat, lat_min, lat_max)
-        lon_c = np.clip(lon, lon_min, lon_max)
-        if not logged_out_of_bounds and (lat_c != lat or lon_c != lon):
-            logger.warning(
-                "Bathymetry query (%.4f, %.4f) outside grid bounds lat[%.4f, %.4f] "
-                "lon[%.4f, %.4f]; clamping to nearest edge value (further out-of-bounds "
-                "queries in this run will not be logged).",
-                lat, lon, lat_min, lat_max, lon_min, lon_max,
-            )
-            logged_out_of_bounds = True
-        depth = float(interp([[lat_c, lon_c]])[0]) * -1.0
-        if math.isnan(depth):
-            # max(nan, 0.0) would silently return nan here (any comparison
-            # against NaN is False, so Python's max() keeps the first arg).
-            depth = 0.0
-        return max(depth, 0.0)
-
-    return query
 
 def xy_to_latlon(x: float, y: float, start_lat: float, start_lon: float) -> tuple[float, float]:
     lat = start_lat + y / 111_000.0
@@ -368,86 +218,6 @@ def latlon_to_xy(lat: float, lon: float, start_lat: float, start_lon: float) -> 
     return x, y
 
 
-def build_uv_interpolators(
-    model_ds: xr.Dataset,
-) -> tuple[RegularGridInterpolator, RegularGridInterpolator, dict[str, float]]:
-    """
-    Builds (u_interp, v_interp, bounds) from a CMEMS-style xarray Dataset
-    with dims (time, depth, latitude, longitude).
-    """
-    times = model_ds["time"].values.astype("datetime64[s]").astype(np.float64)
-    depths = model_ds["depth"].values
-    lats = model_ds["latitude"].values
-    lons = model_ds["longitude"].values
-
-    u_interp = RegularGridInterpolator(
-        (times, depths, lats, lons),
-        model_ds["uo"].values,
-        method="linear",
-        bounds_error=False,
-        fill_value=np.nan,
-    )
-    v_interp = RegularGridInterpolator(
-        (times, depths, lats, lons),
-        model_ds["vo"].values,
-        method="linear",
-        bounds_error=False,
-        fill_value=np.nan,
-    )
-
-    bounds = {
-        "t_min": times.min(), "t_max": times.max(),
-        "z_min": depths.min(), "z_max": depths.max(),
-        "lat_min": lats.min(), "lat_max": lats.max(),
-        "lon_min": lons.min(), "lon_max": lons.max(),
-    }
-
-    return u_interp, v_interp, bounds
-
-
-def query_uv(
-    u_interp: RegularGridInterpolator,
-    v_interp: RegularGridInterpolator,
-    bounds: dict[str, float],
-    t: datetime,
-    z: float,
-    lat: float,
-    lon: float,
-) -> tuple[float, float]:
-    """
-    Queries (u, v) at a single (t, z, lat, lon) point via linear
-    interpolation, clamping to grid bounds and zeroing NaNs.
-    """
-    t_s = np.datetime64(t, "s").astype(np.float64)
-
-    t_c = np.clip(t_s, bounds["t_min"], bounds["t_max"])
-    z_c = np.clip(z, bounds["z_min"], bounds["z_max"])
-    lat_c = np.clip(lat, bounds["lat_min"], bounds["lat_max"])
-    lon_c = np.clip(lon, bounds["lon_min"], bounds["lon_max"])
-
-    if not bounds.get("_out_of_bounds_logged") and (
-        t_c != t_s or z_c != z or lat_c != lat or lon_c != lon
-    ):
-        logger.warning(
-            "UV query (t=%s, z=%.1f, lat=%.4f, lon=%.4f) outside forecast bounds "
-            "t[%s, %s] z[%.1f, %.1f] lat[%.4f, %.4f] lon[%.4f, %.4f]; clamping to "
-            "nearest edge value (further out-of-bounds queries in this run will not be logged).",
-            t, z, lat, lon,
-            bounds["t_min"], bounds["t_max"], bounds["z_min"], bounds["z_max"],
-            bounds["lat_min"], bounds["lat_max"], bounds["lon_min"], bounds["lon_max"],
-        )
-        bounds["_out_of_bounds_logged"] = True
-
-    point = [[t_c, z_c, lat_c, lon_c]]
-    u = float(u_interp(point)[0])
-    v = float(v_interp(point)[0])
-
-    if math.isnan(u):
-        u = 0.0
-    if math.isnan(v):
-        v = 0.0
-
-    return u, v
 
 def state_to_row(state: EstimatedState) -> dict:
     "Flattens an EstimatedState into a parquet-friendly row (see read_state/write_state)."
@@ -516,3 +286,5 @@ def read_last_surfacing(float_id: int) -> dict:
         raise ValueError(f"Surfacing and action log is empty for float ID: {float_id}")
 
     return surfacing_and_action_log[-1]
+
+

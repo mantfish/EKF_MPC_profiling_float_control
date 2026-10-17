@@ -16,7 +16,171 @@ logger = logging.getLogger(__name__)
 
 
 
-def surface_trigger(email_file: str) -> str:
+def simulate_action(starting_state, forecast, bathymetry, action, config, OU):
+
+    # Check that forecast data covers the entire simulation period
+    if not forecast.check_forecast_coverage(starting_state.time, action.duration_hours):
+        raise ValueError("Forecast data does not cover the entire simulation period.")
+    if not bathymetry.check_bathymetry_coverage(starting_state.location, config.max_drift):
+        raise ValueError("Bathymetry data does not cover the entire simulation region.")
+
+
+    simulated_state = copy.deepcopy(starting_state)
+    simulated_end_time = starting_state.time + timedelta(hours=action.duration_hours)
+
+    decay_e, bias_var_e, decay_n, bias_var_n = OU.get_ou_step()
+    Q_step = np.diag([0.0, 0.0, bias_var_e, bias_var_n]) 
+
+    states = []
+
+    while simulated_state.time < simulated_end_time:
+
+        dx, dy = 0.0, 0.0
+        u, v = forecast.query_uv(simulated_state.time, simulated_state.depth, simulated_state.location, bias=(simulated_state.bx, simulated_state.by))
+        bottom_depth = bathymetry.get_depth(simulated_state.location)
+
+        # Phase transitions
+        if simulated_state.phase == "communicating":
+            if simulated_state.time >= starting_state.time + timedelta(hours=config.estimated_tranmission_time_hours):
+                simulated_state.phase = "descending"
+
+        if simulated_state.phase == "descending":
+            if simulated_state.depth >= action.drifting_depth and action.grounding is False: 
+                simulated_state.phase = "drifting"
+                if simulated_state.depth > bottom_depth:
+                    logger.warning("Float %s is drifting at depth %.2f m, which is below the bathymetry depth %.2f m at location (%f, %f).", float_id, simulated_state.depth, bottom_depth, lat, lon)
+            if simulated_state.depth >= bottom_depth and action.grounding is True:
+                simulated_state.phase = "grounded"
+
+        if simulated_state.phase == "drifting":
+            if simulated_state.time > simulated_end_time - timedelta(seconds=simulated_state.depth / config.ascent_speed_m_per_s):
+                simulated_state.phase = "ascending"
+            if simulated_state.depth >= bottom_depth:
+                simulated_state.phase = "grounded" 
+                logger.warning("Float %s is drifting at depth %.2f m, which is below the bathymetry depth %.2f m at location (%f, %f). so has now grounded", float_id, simulated_state.depth, bottom_depth, lat, lon)
+
+        if simulated_state.phase == "ascending" and simulated_state.depth <= 0.0:
+            simulated_state.phase = "communicating"
+
+        # Vertical motion + this iteration's timestep. Ascending/descending move in
+        # vertical_dt increments; every other phase (communicating/parking) advances
+        # by parking_dt, matching the granularity of the horizontal drift below.
+        if simulated_state.phase == "descending":
+            simulated_state.depth += config.descent_speed_m_per_s * config.vertical_dt
+            dt = config.vertical_dt
+        elif simulated_state.phase == "ascending":
+            simulated_state.depth = max(0.0, simulated_state.depth - config.ascent_speed_m_per_s * config.vertical_dt)
+            dt = config.vertical_dt
+        else:
+            dt = config.parking_dt
+
+        if not simulated_state.on_seabed:
+            F = compute_jacobian(simulated_state, forecast, ou)  # pre-step
+            simulated_state.x += simulated_state.current_u * dt
+            simulated_state.y += simulated_state.current_v * dt
+            # Position block: first-order Phi = I + F dt (|F dt| << 1).
+            # Bias block: exact OU decay instead of 1 - dt/tau.
+            Phi = np.eye(4) + F * dt
+            Phi[2, 2] = decay_e
+            Phi[3, 3] = decay_n
+        else:
+            # Float is stationary so position doesn't evolve,
+            # but the bias keeps evolving in the real world regardless
+            Phi = np.diag([1.0, 1.0, decay_e, decay_n])
+
+        # Expected bias relaxes towards zero; covariance propagates through Phi
+        simulated_state.bx *= decay_e
+        simulated_state.by *= decay_n
+        simulated_state.P = Phi @ simulated_state.P @ Phi.T + Q_step
+
+
+        simulated_state.time += timedelta(seconds=dt)
+        simulated_state.update_location(dx, dy)        
+
+        logger.info("Simulated state at time %s: Location (%f, %f), Depth %f, Phase %s", simulated_state.time, simulated_state.location.latitude, simulated_state.location.longitude, simulated_state.depth, simulated_state.phase)
+        states.append(simulated_state)
+
+    return states
+
+
+def get_action(float_id):
+
+    config = read_config(float_id)
+    prev_surfaced_state, prev_action = read_surfacing_and_action(float)
+    max_action_hours = max(for action in config.actions times = [], times.append(duration_hours))
+    time_buffer_hours = 10
+    mpc = MPC(config.target_location)
+
+    forecast = Forecast(config, prev_surfaced_state.location, (prev_surfaced_state.time - time_buffer_hours, prev_surfaced_state + 2*max_action_hours + buffer ))
+    bathymtery = Bathymetry(prev_surfaced_state.location, config.max_drift)
+
+    OU = read_ou(float_id)
+
+    estimated_trajectory = simulate_action(prev_surfaced_state, forecast, bathymetry, OU)
+    estimated_future_surfacing = estimated_trajectory[-1]
+
+    best_action = None
+    best_action_cost = np.inf
+    for action in config.possible_actions:
+        logger.info("starting future simulation of ..")
+        MPC_trajectory = simulate_action(estimated_future_surfacing.copy(), forecast, bathymetry, OU)
+        cost = mpc.evaluate_cost(expected_surfacing = MPC_trajectory[-1], last_surfacing = estimated_future_surfacing, action = action)
+        
+        if cost < best_action_cost:
+            best_action = action
+            best_action_cost = cost
+
+    return best_action
+
+
+def kf_update_step(est, real) -> tuple[EstimatedState, float]:
+    """EKF measurement update from a real GPS surfacing fix.
+
+    The fix is treated as exact (R=0). In that limit position is replaced
+    outright by the fix, and the bias estimate gets a correction (and its
+    variance a reduction) through the position-bias cross-covariance built
+    up over the preceding drift -- that is where the bias "learning" happens.
+    Returns the updated state and the normalised innovation squared (NIS),
+    which should average ~2 if P is well calibrated.
+    """
+
+    P_XX = est.P[:2, :2]
+    P_Xb = est.P[:2, 2:]
+    P_bX = est.P[2:, :2]
+    P_bb = est.P[2:, 2:]
+
+    innovation = np.array([real.x - est.x, real.y - est.y])
+    # Tiny regulariser, not a modelled measurement noise -- keeps the inverse defined
+    P_XX_inv = np.linalg.inv(P_XX + np.eye(2) * 1e-10)
+    nis = float(innovation @ P_XX_inv @ innovation)
+    bias_correction = P_bX @ P_XX_inv @ innovation
+
+    P_new = np.zeros((4, 4))
+    P_new[:2, :2] = np.eye(2) * 1e-10
+    P_new[2:, 2:] = P_bb - P_bX @ P_XX_inv @ P_Xb
+
+    updated = EstimatedState(
+        time=real.time,
+        depth=0.0,
+        phase=_COMMUNICATING,
+        x=real.x,
+        y=real.y,
+        bx=est.bx + bias_correction[0],
+        by=est.by + bias_correction[1],
+        P=P_new,
+    )
+    return updated, nis
+
+
+
+def surface_trigger(float_id, location):
+    
+
+
+
+
+
+def get_updated_state(real_surfaced_state):
 
     new_data = read_json(email_file)
 
@@ -32,12 +196,6 @@ def surface_trigger(email_file: str) -> str:
 
     Control = KFMPC(
         target_location=[config.target_lat, config.target_lon],
-        flow_weight=config.flow_weight,
-        distance_weight=config.distance_weight,
-        science_weight=config.science_weight,
-        variance_weight=config.variance_weight,
-        radius_std_m=config.radius_std,
-        time_horizon_hours=int(config.flow_time_horizon_hours),
     )
 
     # Convert location to x,y coordainates relative to target location
@@ -110,6 +268,11 @@ def surface_trigger(email_file: str) -> str:
     update_state(float_id, forecast_ds=forecast_ds)
 
     return selected_action_name
+
+
+
+
+
 
 
 def update_state(
