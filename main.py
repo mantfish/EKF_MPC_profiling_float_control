@@ -108,15 +108,16 @@ def get_action(float_id):
     config = read_config(float_id)
     prev_surfaced_state, prev_action = read_surfacing_and_action(float)
     max_action_hours = max(for action in config.actions times = [], times.append(duration_hours))
-    time_buffer_hours = 10
+    time_buffer_hours = config.buffer_time
+    OU = read_ou(float_id)
     mpc = MPC(config.target_location)
 
     forecast = Forecast(config, prev_surfaced_state.location, (prev_surfaced_state.time - time_buffer_hours, prev_surfaced_state + 2*max_action_hours + buffer ))
     bathymtery = Bathymetry(prev_surfaced_state.location, config.max_drift)
 
-    OU = read_ou(float_id)
 
-    estimated_trajectory = simulate_action(prev_surfaced_state, forecast, bathymetry, OU)
+
+    estimated_trajectory = simulate_action(prev_surfaced_state, forecast, bathymetry, prev_action OU)
     estimated_future_surfacing = estimated_trajectory[-1]
 
     best_action = None
@@ -173,8 +174,32 @@ def kf_update_step(est, real) -> tuple[EstimatedState, float]:
 
 
 
-def surface_trigger(float_id, location):
+def surface_trigger(float_id, surface_location):
+    #Todo make sure difference isn't too big
+
+    config = read_config(float_id)
+    prev_surfaced_state, prev_action = read_surfacing_and_action(float)
+    max_action_hours = max(for action in config.actions times = [], times.append(duration_hours))
+    time_buffer_hours = config.buffer_time
+    OU = read_ou(float_id)
+
+    forecast = Forecast(config, prev_surfaced_state.location, (prev_surfaced_state.time - time_buffer_hours, prev_surfaced_state + 2*max_action_hours + buffer ))
+    bathymetry = Bathymetry(prev_surfaced_state.location, config.max_drift)
+
+    estimated_trajectory = simulate_action(prev_surfaced_state, forecast, bathymetry, prev_action OU)
+    estimated_surfacing = estimated_trajectory[-1]
+
+    updated_state = kf_update_step(estimated_surfacing, surface_location)
+
+    # save past
+    save
+
+
     
+
+
+
+
 
 
 
