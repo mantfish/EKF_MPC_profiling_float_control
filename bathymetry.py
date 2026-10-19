@@ -1,148 +1,48 @@
+import logging
+import math
+
+import numpy as np
+import xarray as xr
+from scipy.interpolate import RegularGridInterpolator
+
+from helpers import Config, Location, region_around
+
+logger = logging.getLogger(__name__)
+
+
 class Bathymetry:
-    def __init__(self, config: dict, target_location: Location):
-        self.bathy_file = config.get("bathy_file")
-        self.bathy_ds = self.load_bathymetry()
-        self.target_location = location
-        self._bathy_interpolator = self.build_bathymetry_interpolator()
+    def __init__(self, config: Config, location: Location):
+        # Crop to twice max_drift: the MPC simulations start from an estimated
+        # surfacing that can itself be up to max_drift from this location
+        region = region_around(location, 2 * config.max_drift)
 
-    def load_bathymetry(self) -> xr.Dataset:
-        """
-        Loads the bathymetry dataset from the specified file.
-        """
-        if not self.bathy_file:
-            raise ValueError("Bathymetry file path is not specified in the config.")
-        
-        try:
-            bathy_ds = xr.open_dataset(self.bathy_file)
-            return bathy_ds
-        except Exception as e:
-            logger.error("Failed to load bathymetry dataset: %s", e)
-            raise
+        with xr.open_dataset(config.data_dir / config.bathymetry_file_name) as ds:
+            elevation = ds["elevation"].sel(
+                lat=slice(region.latitude_min, region.latitude_max),
+                lon=slice(region.longitude_min, region.longitude_max),
+            ).load()
 
-    def define_region_aroung_float() -> Region:
-        """
-        Define a region around the float's location based on the maximum drift expected."""
-        start_location = self.target_location
-        lat_min = start_location.latitude - max_drift / KM_PER_DEG_LAT
-        lon_min = start_location.longitude - max_drift / (KM_PER_DEG_LAT * np.cos(np.radians(start_location.latitude)))
-        lat_max = start_location.latitude + max_drift / KM_PER_DEG_LAT
-        lon_max = start_location.longitude + max_drift / (KM_PER_DEG_LAT * np.cos(np.radians(start_location.latitude)))
-        return Region(
-            latitude_min=lat_min,
-            latitude_max=lat_max,
-            longitude_min=lon_min,
-            longitude_max=lon_max
-        )
+        self.lats = elevation.lat.values.astype(np.float64)
+        self.lons = elevation.lon.values.astype(np.float64)
+        self.interpolator = RegularGridInterpolator((self.lats, self.lons), elevation.values.astype(np.float64), bounds_error=False, fill_value=np.nan)
+        self.out_of_bounds_logged = False
+        logger.info("Loaded bathymetry lat [%.3f, %.3f] lon [%.3f, %.3f]", self.lats.min(), self.lats.max(), self.lons.min(), self.lons.max())
 
     def get_depth(self, location: Location) -> float:
-        """
-        Returns the bathymetry depth (positive down) at a given (lat, lon) location.
-        """
-        lat = location.latitude
-        lon = location.longitude
+        """Seabed depth in metres, positive down, 0 on land. Clamps to the grid edge outside the loaded region."""
+        lat = np.clip(location.latitude, self.lats.min(), self.lats.max())
+        lon = np.clip(location.longitude, self.lons.min(), self.lons.max())
+        if not self.out_of_bounds_logged and (lat != location.latitude or lon != location.longitude):
+            logger.warning("Bathymetry query %s outside loaded region, clamping to edge (only logged once).", location)
+            self.out_of_bounds_logged = True
 
-        # Use nearest-neighbor interpolation to get the depth at the specified location
-        depth = self.bathy_ds.sel(latitude=lat, longitude=lon, method="nearest")["depth"].values.item()
-
-        return float(depth)
-
-
-    def build_bathymetry_interpolator(self) -> Callable[[float, float], float]:
-        """Build a fast scipy interpolator for seabed depth from the GEBCO dataset.
-
-        Returns a callable ``f(lat, lon) -> depth_m`` that is orders of magnitude
-        faster than calling xarray interp on every timestep.
-
-        Parameters
-        ----------
-        bathy_ds:
-            Dataset from :func:`load_bathymetry`.
-        bbox:
-            If given, crops to this region before materializing. Bathymetry files
-            are basin-wide (tens of millions of grid points); without this, the
-            whole grid gets pulled into memory even though only a small area
-            around the float is ever queried.
-
-        Returns
-        -------
-        callable
-            ``f(lat, lon) -> float`` — seabed depth in metres, positive down.
-            Returns ``0.0`` for land (positive GEBCO elevation).
-        """
-        self.bbox = self.define_region_aroung_float() if self.config.max_drift else None
-        if self.bbox is not None:
-            bathy_ds = bathy_ds.sel(
-                lat=slice(self.bbox.latitude_min, self.bbox.latitude_max),
-                lon=slice(self.bbox.longitude_min, self.bbox.longitude_max),
-            )
-
-        lats = self.bathy_ds.lat.values.astype(np.float64)
-        lons = self.bathy_ds.lon.values.astype(np.float64)
-        elev = self.bathy_ds["elevation"].values.astype(np.float64)  # (lat, lon)
-        lat_min, lat_max = lats.min(), lats.max()
-        lon_min, lon_max = lons.min(), lons.max()
-
-        interp = RegularGridInterpolator(
-            (lats, lons), elev, method="linear", bounds_error=False, fill_value=np.nan,
-        )
-
-        logged_out_of_bounds = False
-
-        def query(lat: float, lon: float) -> float:
-            nonlocal logged_out_of_bounds
-            lat_c = np.clip(lat, lat_min, lat_max)
-            lon_c = np.clip(lon, lon_min, lon_max)
-            if not logged_out_of_bounds and (lat_c != lat or lon_c != lon):
-                logger.warning(
-                    "Bathymetry query (%.4f, %.4f) outside grid bounds lat[%.4f, %.4f] "
-                    "lon[%.4f, %.4f]; clamping to nearest edge value (further out-of-bounds "
-                    "queries in this run will not be logged).",
-                    lat, lon, lat_min, lat_max, lon_min, lon_max,
-                )
-                logged_out_of_bounds = True
-            depth = float(interp([[lat_c, lon_c]])[0]) * -1.0
-            if math.isnan(depth):
-                # max(nan, 0.0) would silently return nan here (any comparison
-                # against NaN is False, so Python's max() keeps the first arg).
-                depth = 0.0
-            return max(depth, 0.0)
-
-        return query
-
-    def get_depth(self, location: Location) -> float:
-        """
-        Returns the bathymetry depth (positive down) at a given (lat, lon) location.
-        """
-        lat = location.latitude
-        lon = location.longitude
-
-        # Use the interpolator to get the depth at the specified location
-        depth = self._bathy_interpolator(lat, lon)
-
-        return float(depth)
+        depth = -float(self.interpolator([[lat, lon]])[0])
+        if math.isnan(depth):
+            return 0.0
+        return max(depth, 0.0)
 
     def check_bathymetry_coverage(self, location: Location, max_drift: float) -> bool:
-        """
-        Checks if the bathymetry data covers the region around the float's location
-        based on the maximum drift expected.
-
-        Parameters
-        ----------
-        location : Location
-            The current location of the float.
-        max_drift : float
-            The maximum drift distance in meters.
-
-        Returns
-        -------
-        bool
-            True if the bathymetry data covers the region, False otherwise.
-        """
-        region = self.define_region_aroung_float()
-        
-        # Check if the bathymetry dataset covers the defined region
-        lat_min, lat_max = self.bathy_ds.lat.min().item(), self.bathy_ds.lat.max().item()
-        lon_min, lon_max = self.bathy_ds.lon.min().item(), self.bathy_ds.lon.max().item()
-
-        return (region.latitude_min >= lat_min and region.latitude_max <= lat_max and
-                region.longitude_min >= lon_min and region.longitude_max <= lon_max)
+        """True if the loaded grid covers max_drift km around location."""
+        region = region_around(location, max_drift)
+        return (self.lats.min() <= region.latitude_min and region.latitude_max <= self.lats.max()
+                and self.lons.min() <= region.longitude_min and region.longitude_max <= self.lons.max())

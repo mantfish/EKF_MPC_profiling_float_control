@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import logging
 import resource
 
@@ -6,302 +7,145 @@ import resource
 # a Render instance's memory cap (diagnosing repeated OOM restarts).
 _pre_import_rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
-import json
-import os
-import tempfile
-from datetime import datetime
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from http import HTTPStatus
-from pathlib import Path
 
-import numpy as np
-import pandas as pd
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Body, FastAPI, HTTPException
+from fastapi.responses import JSONResponse, PlainTextResponse
 
-from main import surface_trigger
-from main import update_state as run_update_state
+from helpers import ControlAction, Location
+from main import LOG_FORMAT, get_action, predict_surfacing, setup_logging, surface_trigger
+from records import Records
 
-from data_handler import *
-from data_handler import _float_dir
-from helpers import Location, EstimatedState
-from visulisation import build_visualization_html
+setup_logging(debug=False)
 
-logging.basicConfig(level=logging.INFO)
-
-logging.info("[memory] before heavy imports: %.1f MB", _pre_import_rss_kb / 1024)
-
-
-def _parse_json_object(raw: bytes, field_name: str) -> dict:
-    "Parses raw bytes as JSON, rejecting anything whose top level isn't an object."
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise HTTPException(
-            status_code=HTTPStatus.BAD_REQUEST, detail=f"Invalid JSON in {field_name}: {e}"
-        )
-    if not isinstance(parsed, dict):
-        raise HTTPException(
-            status_code=HTTPStatus.BAD_REQUEST,
-            detail=f"{field_name} must be a JSON object, got {type(parsed).__name__}",
-        )
-    return parsed
+logging.info("[memory] before heavy imports: %.1f MB, after: %.1f MB", _pre_import_rss_kb / 1024, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
 
 
 app = FastAPI(
     title="EKF MPC Profiling float controller",
     description="API for making prediction of float",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 
-def _configure_float_logging(float_id: int, action_name: str) -> tuple[logging.Handler, Path]:
-    "Adds a per-request FileHandler under the float's own log directory."
-    log_dir = _float_dir(float_id) / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{action_name}_{float_id}_on_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}.log"
-    handler = logging.FileHandler(log_path)
-    handler.setLevel(logging.INFO)
-    logging.getLogger().addHandler(handler)
-    return handler, log_path
+@app.exception_handler(ValueError)
+def value_error_handler(request, error: ValueError) -> JSONResponse:
+    # e.g. no action stored for the cycle yet, fix with /update_stored_action
+    logging.warning("%s failed: %s", request.url, error)
+    return JSONResponse(status_code=HTTPStatus.BAD_REQUEST, content={"detail": str(error)})
 
+
+def get_records(float_id: int) -> Records:
+    try:
+        return Records(float_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail=f"Float {float_id} not found")
+
+
+@contextmanager
+def float_log(records, name):
+    """Also writes everything logged during the request to floats/<id>/logs/, fetch it with /get_file."""
+    log_dir = records.float_dir / "logs"
+    log_dir.mkdir(exist_ok=True)
+    # UTC like the log lines, copernicusmarine sets logging to UTC for the whole process
+    handler = logging.FileHandler(log_dir / f"{name}_{datetime.now(timezone.utc):%Y-%m-%d-%H-%M-%S}Z.log")
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logging.getLogger().addHandler(handler)
+    try:
+        yield
+    except Exception:
+        logging.exception("%s for float %s failed", name, records.float_id)
+        raise
+    finally:
+        logging.getLogger().removeHandler(handler)
+        handler.close()
+
+
+def state_to_dict(state) -> dict:
+    return {
+        "time": state.time.isoformat(),
+        "latitude": state.location.latitude,
+        "longitude": state.location.longitude,
+        "depth": state.depth,
+        "phase": state.phase,
+        "bx": state.bx,
+        "by": state.by,
+    }
+
+
+# Endpoints are plain def, not async, so the minutes-long simulations run in FastAPI's thread pool
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def healthcheck() -> dict[str, str]:
     return {"status": "ok", "message": "API is running and ready to accept requests."}
 
-@app.get("/visualize/{float_id}", response_class=HTMLResponse)
-def visualize(float_id: int) -> HTMLResponse:
-    if not check_if_float_exists(float_id):
-        raise HTTPException(status_code=404, detail=f"Float {float_id} not found")
-    return HTMLResponse(build_visualization_html(float_id))
-
 @app.post("/return_action")
-async def return_action(file: UploadFile = File(...)) -> JSONResponse:
-    if not file.filename or not file.filename.endswith(".json"):
-        raise HTTPException(
-            status_code=HTTPStatus.BAD_REQUEST, detail="Invalid file format. Please upload a .json file."
-        )
-
-    contents = await file.read()
-    float_id = _parse_json_object(contents, "file")["float_id"]
-    does_float_exists = check_if_float_exists(float_id)
-    if does_float_exists is False:
-        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Float is not in database")
-
-    handler, log_path = _configure_float_logging(float_id, "surface_trigger")
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as tmp:
-            tmp.write(contents)
-            tmp_path = tmp.name
-        selected_action_name = surface_trigger(tmp_path)
-    finally:
-        if tmp_path is not None:
-            os.unlink(tmp_path)
-        logging.getLogger().removeHandler(handler)
-        handler.close()
-
-    return JSONResponse(content={"action": selected_action_name})
+def return_action(float_id: int, debug: bool) -> dict:
+    with float_log(get_records(float_id), "return_action"):
+        return asdict(get_action(float_id, debug))
 
 @app.post("/update_state")
-async def update_state_endpoint(float_id: int) -> bool:
-    does_float_exists = check_if_float_exists(float_id)
-    if does_float_exists is False:
-        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Float is not in database")
-    handler, log_path = _configure_float_logging(float_id, "update_state")
-    try:
-        run_update_state(float_id)
-    finally:
-        logging.getLogger().removeHandler(handler)
-        handler.close()
-    return True
-
-def initialise_float_core(config_json: dict, bathymetry_bytes: bytes, starting_contents: dict) -> None:
-    """Writes a new float's config/bathymetry/initial state to disk and runs its first update_state.
-
-    Shared by the /initialise_float endpoint and any bulk-onboarding scripts, so both
-    go through the exact same validated logic.
-    """
-    float_id = config_json["float_id"]
-
-    does_float_exists = check_if_float_exists(float_id)
-    if does_float_exists is True:
-        raise HTTPException(
-            status_code=HTTPStatus.CONFLICT,
-            detail=f"Float {float_id} is already in database, use update_state or return action instead",
-        )
-
-    # The bathymetry upload is always saved as bathymetry.nc (see below), so the
-    # stored config should always agree — regardless of what the uploaded config
-    # said (or omitted). Treat this as server-managed rather than client input.
-    config_json["bathymetry_file_name"] = "bathymetry.nc"
-    config_contents = json.dumps(config_json, indent=4).encode("utf-8")
-
-    # Validate before touching disk: the action a float is initialised with must
-    # be one of the actions listed in its own config, otherwise later simulation
-    # steps (which look the action up by name) would fail on a bad float.
-    possible_action_names = {a["name"] for a in config_json["possible_actions"]}
-    starting_action_name = starting_contents["action_name"]
-    if starting_action_name not in possible_action_names:
-        raise HTTPException(
-            status_code=HTTPStatus.BAD_REQUEST,
-            detail=(
-                f"Starting action '{starting_action_name}' is not one of this float's "
-                f"possible_actions: {sorted(possible_action_names)}"
-            ),
-        )
-
-    float_dir = _float_dir(float_id)
-    float_dir.mkdir(parents=True, exist_ok=True)
-
-    bathymetry_path = float_dir / "bathymetry.nc"
-    with open(bathymetry_path, "wb") as f:
-        f.write(bathymetry_bytes)
-
-    config_path = float_dir / "config.json"
-    with open(config_path, "wb") as f:
-        f.write(config_contents)
-
-    config = read_config(float_id)
-
-    deploy_time = pd.Timestamp(starting_contents["time"]).tz_localize(None)
-    deploy_location = Location(
-        latitude=starting_contents["location"]["latitude"],
-        longitude=starting_contents["location"]["longitude"],
-    )
-    x0, y0 = latlon_to_xy(deploy_location.latitude, deploy_location.longitude,
-                        config.target_lat, config.target_lon)
-
-    P0 = np.zeros((4, 4))
-    P0[2:, 2:] = np.diag([1e-4, 1e-4])  # bias uncertainty prior; position known exactly
-
-    deploy_state = EstimatedState(
-        time=deploy_time,
-        location=deploy_location,
-        depth=starting_contents["depth"],
-        phase=starting_contents["phase"],
-        x=x0,
-        y=y0,
-        bx=0.0,
-        by=0.0,
-        P=P0,
-    )
-
-    write_surfacing_action_log(
-        float_id=float_id,
-        action_name=starting_contents["action_name"],
-        surfaced_timestamp=deploy_time,
-        surfaced_location=deploy_location,
-        estimated_state=deploy_state,
-        real_state=deploy_state,  # identical at t=0 — no innovation has happened yet
-        nis=0.0,
-        innovation=np.zeros(2),
-        actions_cost={},
-    )
-
-    run_update_state(float_id)
-
-
-@app.post("/initialise_float")
-async def initialise_float_endpoint(
-    config_file: UploadFile = File(...),
-    bathymetry_file: UploadFile = File(...),
-    starting_state_and_action: UploadFile = File(...),
-) -> bool:
-    if not config_file.filename or not config_file.filename.endswith(".json"):
-        raise HTTPException(
-            status_code=HTTPStatus.BAD_REQUEST, detail=f"Invalid file format for {config_file.filename}. Please upload a .json file."
-        )
-
-    if not starting_state_and_action.filename or not starting_state_and_action.filename.endswith(".json"):
-        raise HTTPException(
-            status_code=HTTPStatus.BAD_REQUEST, detail=f"Invalid file format for {starting_state_and_action.filename}. Please upload a .json file."
-        )
-
-    if not bathymetry_file.filename or not bathymetry_file.filename.endswith(".nc"):
-        raise HTTPException(
-            status_code=HTTPStatus.BAD_REQUEST,
-            detail=f"Invalid file format for {bathymetry_file.filename}. Please upload a .nc file.",
-        )
-
-    config_json = _parse_json_object(await config_file.read(), "config_file")
-    bathymetry_bytes = await bathymetry_file.read()
-    starting_contents = _parse_json_object(await starting_state_and_action.read(), "starting_state_and_action")
-
-    initialise_float_core(config_json, bathymetry_bytes, starting_contents)
-
-    return True
-
-@app.post("/update_config")
-async def update_config(config_file: UploadFile = File(...)) -> bool:
-
-    if not config_file.filename or not config_file.filename.endswith(".json"):
-        raise HTTPException(
-            status_code=HTTPStatus.BAD_REQUEST,
-            detail=f"Invalid file format for {config_file.filename}. Please upload a .json file.",
-        )
-
-    config_contents = await config_file.read()
-    config_json = _parse_json_object(config_contents, "config_file")
-    float_id = config_json["float_id"]
-
-    if not check_if_float_exists(float_id):
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND,
-            detail=f"Float {float_id} not found. Use initialise_float first.",
-        )
-
-    # bathymetry.nc is never re-uploaded here, so keep this server-managed
-    # field consistent with the file already on disk (see initialise_float_endpoint).
-    config_json["bathymetry_file_name"] = "bathymetry.nc"
-    config_contents = json.dumps(config_json, indent=4).encode("utf-8")
-
-    # Validate before touching disk — raises if malformed/missing keys
-    config_from_dict(config_json, float_id)
-
-    config_path = _float_dir(float_id) / "config.json"
-    with open(config_path, "wb") as f:
-        f.write(config_contents)
-
-    return True
+def update_state_endpoint(float_id: int, debug: bool) -> dict:
+    with float_log(get_records(float_id), "update_state"):
+        return state_to_dict(predict_surfacing(float_id, debug))
 
 @app.post("/get_last_surfacing")
-async def get_last_surfacing(float_id: int) -> dict:
-    if not check_if_float_exists(float_id):
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND,
-            detail=f"Float {float_id} not found.",
-        )
+def get_last_surfacing(float_id: int) -> dict:
+    records = get_records(float_id)
+    last_cycle_number = records.get_last_cycle_number()
+    if last_cycle_number is None:
+        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail=f"No surfacings for float {float_id}")
+    return records.get_surfacing_entry(last_cycle_number)
 
-    last_surfacing = read_last_surfacing(float_id)
-    if last_surfacing is None:
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND,
-            detail=f"No surfacing data found for float {float_id}.",
-        )
+@app.post("/surfaced_update")
+def surfaced_update(float_id: int, cycle_number: int, latitude: float, longitude: float, time: datetime, debug: bool) -> dict:
+    with float_log(get_records(float_id), "surfaced_update"):
+        return state_to_dict(surface_trigger(float_id, Location(latitude, longitude), time, cycle_number, debug))
 
-    return last_surfacing
+@app.post("/update_stored_action")
+def update_stored_action(float_id: int, cycle_number: int, drifting_depth: float, duration_hours: float) -> bool:
+    records = get_records(float_id)
+    last_cycle_number = records.get_last_cycle_number()
+    if last_cycle_number is not None and cycle_number > last_cycle_number + 1:
+        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=f"Cycle {cycle_number} has not started yet, last surfacing is cycle {last_cycle_number}")
 
+    records.save_action(ControlAction(drifting_depth, duration_hours), cycle_number, source="manual")
+    return True
+
+@app.post("/update_ou")
+def update_ou(float_id: int, tau_e: float = None, tau_n: float = None, q_e: float = None, q_n: float = None) -> dict:
+    """Sets the OU bias parameters used from the next simulation on, parameters left out keep their value."""
+    records = get_records(float_id)
+    changes = {name: value for name, value in dict(tau_e=tau_e, tau_n=tau_n, q_e=q_e, q_n=q_n).items() if value is not None}
+    ou = replace(records.get_ou(), **changes)
+    records.write_ou(ou, records.get_last_cycle_number() or 0)
+    return asdict(ou)
+
+@app.post("/update_config")
+def update_config(float_id: int, config: dict = Body(...)) -> bool:
+    records = get_records(float_id)
+    try:
+        records.save_config(config)
+    except KeyError as missing:
+        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=f"Config is missing {missing}")
+    return True
+
+@app.post("/get_errors_and_bias")
+def get_errors_and_bias(float_id: int) -> PlainTextResponse:
+    return PlainTextResponse(get_records(float_id).get_errors_and_bias(), media_type="text/csv")
 
 @app.post("/get_file")
-async def get_file(file_name: str, float_id: int = None) -> JSONResponse:
-    file_path = resolve_within_data_root(file_name, float_id)
-    if not file_path.exists():
-        raise HTTPException(
-            status_code=HTTPStatus.NOT_FOUND,
-            detail=f"File {file_name} not found.",
-        )
-    try:
-        with open(file_path, "rb") as f:
-            file_contents = f.read()
-            logging.info(f"Read file {file_name} with size {len(file_contents)} bytes")
-    except Exception as e:
-        raise HTTPException(
-            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-            detail=f"Error reading file {file_name}: {str(e)}, probably does not exist",
-        )
+def get_file(float_id: int, file_name: str) -> JSONResponse:
+    records = get_records(float_id)
+    float_dir = records.float_dir.resolve()
+    file_path = (float_dir / file_name).resolve()
+    if float_dir not in file_path.parents:
+        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=f"Invalid file_name {file_name}")
+    if not file_path.is_file():
+        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail=f"File {file_name} not found")
 
-
+    file_contents = file_path.read_bytes()
+    logging.info("Read file %s with size %d bytes", file_name, len(file_contents))
     return JSONResponse(content={"file_name": file_name, "file_contents": file_contents.decode("latin-1")})
-
-# TODO add change action / add new

@@ -8,6 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+.env
+.idea/
 
 # Large binary data (bathymetry/CMEMS NetCDF, state parquet) - not source, don't commit
 *.nc

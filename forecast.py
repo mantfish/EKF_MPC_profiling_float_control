@@ -1,201 +1,94 @@
+from datetime import datetime
+import logging
+import math
+import os
+import tempfile
+import time
+
+import copernicusmarine
+import numpy as np
+import pandas as pd
+import xarray as xr
+from scipy.interpolate import RegularGridInterpolator
+
+from helpers import Config, Location, region_around
+
+logger = logging.getLogger(__name__)
+
+CMEMS_DEPTH_MAX = 200.0
+
+
+def to_seconds(t) -> float:
+    return np.datetime64(pd.Timestamp(t), "s").astype(np.float64)
 
 
 class Forecast:
-    def __init__(self, config: dict, location: location, time_range: tuple[datetime, datetime]):
+    def __init__(self, config: Config, location: Location, time_range: tuple[datetime, datetime]):
+        if config.model_type != "CMEMS":
+            raise ValueError(f"Unknown model type in config: {config.model_type}")
 
-        self.target_location = location
-        self.model_type = config.model_type
-        self.time_range = time_range
-        self.forecast_ds = self.get_forecast()
-        self.uv_interpolators = self.build_uv_interpolators()
+        # Same 2 * max_drift box as Bathymetry, the MPC simulations start up to max_drift away
+        region = region_around(location, 2 * config.max_drift)
+        started = time.monotonic()
+        ds = self.download_cmems(config.dataset_id, region, time_range)
+        logger.info("CMEMS download took %.1f s", time.monotonic() - started)
 
+        times = ds["time"].values.astype("datetime64[s]").astype(np.float64)
+        depths = ds["depth"].values
+        lats = ds["latitude"].values
+        lons = ds["longitude"].values
+        grid = (times, depths, lats, lons)
+        self.u_interp = RegularGridInterpolator(grid, ds["uo"].values, bounds_error=False, fill_value=np.nan)
+        self.v_interp = RegularGridInterpolator(grid, ds["vo"].values, bounds_error=False, fill_value=np.nan)
+        self.bounds = [(axis.min(), axis.max()) for axis in grid]
+        self.out_of_bounds_logged = False
 
-    def cmems_credentials(self) -> tuple[str, str]:
-        username = os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME")
-        password = os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD")
-        if not username or not password:
-            raise RuntimeError(
-                "Copernicus Marine credentials are not configured. Set the "
-                "COPERNICUSMARINE_SERVICE_USERNAME and COPERNICUSMARINE_SERVICE_PASSWORD "
-                "environment variables (register for free at "
-                "https://data.marine.copernicus.eu/register)."
-            )
-        return username, password
-
-    def define_region_aroung_float(self, max_drift: float) -> Region:
-        """
-        Define a region around the float's location based on the maximum drift expected."""
-        start_location = self.target_location
-        lat_min = start_location.latitude - max_drift / KM_PER_DEG_LAT
-        lon_min = start_location.longitude - max_drift / (KM_PER_DEG_LAT * np.cos(np.radians(start_location.latitude)))
-        lat_max = start_location.latitude + max_drift / KM_PER_DEG_LAT
-        lon_max = start_location.longitude + max_drift / (KM_PER_DEG_LAT * np.cos(np.radians(start_location.latitude)))
-        return Region(
-            latitude_min=lat_min,
-            latitude_max=lat_max,
-            longitude_min=lon_min,
-            longitude_max=lon_max
-        )
-
-
-    def get_forecast(
-        ) -> xr.Dataset:
-
-        username, password = self.cmems_credentials()
-        if config.max_drift:
-            bbox = self.define_region_aroung_float(self.target_location, self.config.max_drift)
-        else:
-            bbox = self.define_region_aroung_float(self.target_location, MAX_DRIFT)
-
-        start_datetime = pd.Timestamp(min(self.time_range)) - pd.Timedelta(hours=CMEMS_TIME_PRIOR)
-
-        kwargs: dict = dict(
-            dataset_id=config.dataset_id,
-            variables=["uo", "vo"],
-            minimum_latitude=bbox.latitude_min,
-            maximum_latitude=bbox.latitude_max,
-            minimum_longitude=bbox.longitude_min,
-            maximum_longitude=bbox.longitude_max,
-            minimum_depth=0.52,
-            maximum_depth=CMEMS_DEPTH_MAX,
-            start_datetime=start_datetime.isoformat(),
-            end_datetime=pd.Timestamp(latest_time).isoformat(),
-            output_filename="cmems_subset.nc",
-            username=username,
-            password=password,
-        )
-
+    def download_cmems(self, dataset_id, region, time_range) -> xr.Dataset:
+        # Credentials come from the COPERNICUSMARINE_SERVICE_USERNAME/PASSWORD env vars or the toolbox login file
         with tempfile.TemporaryDirectory() as tmp_dir:
-            kwargs["output_directory"] = tmp_dir
-            tmp_path = os.path.join(tmp_dir, "cmems_subset.nc")
-
-            copernicusmarine.subset(**kwargs)
-
-            if not os.path.exists(tmp_path):
-                raise RuntimeError(
-                    "CMEMS subset download did not produce an output file. Check that "
-                    "the Copernicus Marine credentials are valid and the toolbox logs "
-                    "above for the underlying error."
-                )
-
-            logger.info("CMEMS subset downloaded on %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            logger.info("CMEMS subset file size: %.1f MB", os.path.getsize(tmp_path) / (1024 * 1024))
-
-            ds = xr.open_dataset(tmp_path)
-            ds.load()  # materialize into memory before tmp_dir (and the file in it) is deleted
-
-            # CMEMS's packed-int16-with-scale-factor storage gets CF-decoded to float64
-            # by default, which is far more precision than an ocean current velocity
-            # needs. Downcast to float32 to roughly halve this dataset's memory footprint.
+            copernicusmarine.subset(
+                dataset_id=dataset_id,
+                variables=["uo", "vo"],
+                minimum_latitude=region.latitude_min,
+                maximum_latitude=region.latitude_max,
+                minimum_longitude=region.longitude_min,
+                maximum_longitude=region.longitude_max,
+                minimum_depth=0.0,
+                maximum_depth=CMEMS_DEPTH_MAX,
+                start_datetime=pd.Timestamp(time_range[0]).isoformat(),
+                end_datetime=pd.Timestamp(time_range[1]).isoformat(),
+                output_directory=tmp_dir,
+                output_filename="cmems_subset.nc",
+                disable_progress_bar=True,
+            )
+            # Load into memory before tmp_dir is deleted, float32 is plenty for currents
+            ds = xr.open_dataset(os.path.join(tmp_dir, "cmems_subset.nc")).load()
             for var in ("uo", "vo"):
-                ds[var] = ds[var].astype(np.float32, copy=False)
+                ds[var] = ds[var].astype(np.float32)
 
-        first_time = ds.time[0].values
-        last_time = ds.time[-1].values
-
-        logger.info("CMEMS subset time range: %s to %s", first_time, last_time)
-        logger.info("CMEMS subset lat range: %s to %s", ds.latitude.min().values, ds.latitude.max().values)
-
+        logger.info("Downloaded CMEMS forecast %s to %s, lat [%.3f, %.3f] lon [%.3f, %.3f]",
+                    ds.time.values[0], ds.time.values[-1], ds.latitude.min(), ds.latitude.max(), ds.longitude.min(), ds.longitude.max())
         return ds
 
-    def build_uv_interpolators(
-    ) -> tuple[RegularGridInterpolator, RegularGridInterpolator, dict[str, float]]:
-        """
-        Builds (u_interp, v_interp, bounds) from a CMEMS-style xarray Dataset
-        with dims (time, depth, latitude, longitude).
-        """
-        if not self.forecast_ds:
-            raise RuntimeError("Forecast dataset is not loaded. Call get_forecast() first.")
-        
-        times = self.forecast_ds["time"].values.astype("datetime64[s]").astype(np.float64)
-        depths = self.forecast_ds["depth"].values
-        lats = self.forecast_ds["latitude"].values
-        lons = self.forecast_ds["longitude"].values
+    def query_uv(self, t: datetime, z: float, location: Location, bias=None) -> tuple[float, float]:
+        """(u, v) in m/s at a point, clamped to the forecast grid, NaN (land/below seabed) as 0, plus optional bias."""
+        point = [to_seconds(t), z, location.latitude, location.longitude]
+        clamped = [np.clip(value, low, high) for value, (low, high) in zip(point, self.bounds)]
+        # Depth is clamped quietly, the top CMEMS layer starts at ~0.5 m
+        if not self.out_of_bounds_logged and [clamped[0], *clamped[2:]] != [point[0], *point[2:]]:
+            logger.warning("Forecast query (t=%s, z=%.1f, %s) outside forecast grid, clamping to edge (only logged once).", t, z, location)
+            self.out_of_bounds_logged = True
 
-        u_interp = RegularGridInterpolator(
-            (times, depths, lats, lons),
-            self.forecast_ds["uo"].values,
-            method="linear",
-            bounds_error=False,
-            fill_value=np.nan,
-        )
-        v_interp = RegularGridInterpolator(
-            (times, depths, lats, lons),
-            self.forecast_ds["vo"].values,
-            method="linear",
-            bounds_error=False,
-            fill_value=np.nan,
-        )
-
-        bounds = {
-            "t_min": times.min(), "t_max": times.max(),
-            "z_min": depths.min(), "z_max": depths.max(),
-            "lat_min": lats.min(), "lat_max": lats.max(),
-            "lon_min": lons.min(), "lon_max": lons.max(),
-        }
-
-        return u_interp, v_interp, bounds
-
-    def query_uv(
-
-        t: datetime,
-        z: float,
-        location: Location,
-        bias = None,
-    
-    ) -> tuple[float, float]:
-        """
-        Queries (u, v) at a single (t, z, lat, lon) point via linear
-        interpolation, clamping to grid bounds and zeroing NaNs.
-        """
-
-
-
-        t_s = np.datetime64(t, "s").astype(np.float64)
-
-        t_c = np.clip(t_s, self.bounds["t_min"], self.bounds["t_max"])
-        z_c = np.clip(z, self.bounds["z_min"], self.bounds["z_max"])
-        lat_c = np.clip(location.lat, self.bounds["lat_min"], self.bounds["lat_max"])
-        lon_c = np.clip(location.lon, self.bounds["lon_min"], self.bounds["lon_max"])
-
-        if not self.bounds.get("_out_of_bounds_logged") and (
-            t_c != t_s or z_c != z or lat_c != location.lat or lon_c != location.lon
-        ):
-            logger.warning(
-                "UV query (t=%s, z=%.1f, lat=%.4f, lon=%.4f) outside forecast bounds "
-                "t[%s, %s] z[%.1f, %.1f] lat[%.4f, %.4f] lon[%.4f, %.4f]; clamping to "
-                "nearest edge value (further out-of-bounds queries in this run will not be logged).",
-                t, z, location.lat, location.lon,
-                self.bounds["t_min"], self.bounds["t_max"], self.bounds["z_min"], self.bounds["z_max"],
-                self.bounds["lat_min"], self.bounds["lat_max"], self.bounds["lon_min"], self.bounds["lon_max"],
-            )
-            self.bounds["_out_of_bounds_logged"] = True
-
-        point = [[t_c, z_c, lat_c, lon_c]]
-
-        u = float(self._uv_interpolators[0](point)[0])
-        v = float(self._uv_interpolators[1](point)[0])
+        u = float(self.u_interp([clamped])[0])
+        v = float(self.v_interp([clamped])[0])
+        u = 0.0 if math.isnan(u) else u
+        v = 0.0 if math.isnan(v) else v
 
         if bias is not None:
             u += bias[0]
             v += bias[1]
-
-        if math.isnan(u):
-            u = 0.0
-        if math.isnan(v):
-            v = 0.0
-
         return u, v
 
     def check_forecast_coverage(self, time_range: tuple[datetime, datetime]) -> bool:
-        """
-        Checks if the forecast dataset covers the specified time range.
-        Returns True if it does, False otherwise.
-        """
-        start_time, end_time = time_range
-        start_time_s = np.datetime64(start_time, "s").astype(np.float64)
-        end_time_s = np.datetime64(end_time, "s").astype(np.float64)
-
-        return (self.bounds["t_min"] <= start_time_s <= self.bounds["t_max"]) and (self.bounds["t_min"] <= end_time_s <= self.bounds["t_max"])
-
-    
+        t_min, t_max = self.bounds[0]
+        return t_min <= to_seconds(time_range[0]) and to_seconds(time_range[1]) <= t_max

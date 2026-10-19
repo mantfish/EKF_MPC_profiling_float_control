@@ -19,4 +19,5 @@ dependencies = [
     "copernicusmarine",
     "dotenv>=0.9.9",
     "plotly>=6.9.0",
+    "argopy>=1.5.0",
 ]
