@@ -17,8 +17,9 @@ from records import Records
 logger = logging.getLogger(__name__)
 
 GROUNDED_DEPTH = 10_000.0  # metres, deep enough to always hit the bottom
-GROUNDED_MIN_HOURS = 24.0  # 3902607: every cycle longer than a day parks on the bottom
+GROUNDED_MIN_HOURS = 3.0  # 3902607: parks on the bottom every cycle, its park pressure is ~2 m above the seabed
 
+ASCENT_END_CODE = 600
 SURFACE_FIX_CODE = 703
 PARKING_CODE = 290
 
@@ -28,7 +29,7 @@ def decode(values):
 
 
 def estimate_cycles(rtraj_path) -> dict[int, dict]:
-    """Argo cycle number -> {"time", "location", "park_depth"} of that cycle's surfacing and park."""
+    """Argo cycle number -> {"time", "location", "park_depth", "ascent_end"} of that cycle's surfacing and park."""
     with xr.open_dataset(rtraj_path) as ds:
         df = pd.DataFrame({
             "cycle": ds.CYCLE_NUMBER.values,
@@ -53,8 +54,11 @@ def estimate_cycles(rtraj_path) -> dict[int, dict]:
         park_pres = rows[rows.code == PARKING_CODE].pres.dropna()
         park_depth = park_pres.mean() if not park_pres.empty else rows.pres.max()
 
+        ascent_end = rows[rows.code == ASCENT_END_CODE].time.dropna()
+
         cycles[int(cycle_number)] = {
             "time": fix.time.floor("s").to_pydatetime(),
+            "ascent_end": ascent_end.min().floor("s").to_pydatetime() if not ascent_end.empty else None,
             "location": Location(float(fix.lat), float(fix.lon)),
             "park_depth": 0.0 if np.isnan(park_depth) else float(park_depth),
         }
@@ -62,9 +66,16 @@ def estimate_cycles(rtraj_path) -> dict[int, dict]:
 
 
 def estimate_action(cycles, cycle_number) -> ControlAction:
-    """The action carried out after surfacing cycle_number, from Argo cycle cycle_number + 1."""
+    """The action carried out after surfacing cycle_number, from Argo cycle cycle_number + 1.
+
+    It lasts until the float is back on the surface, surface_trigger then drifts it on the surface until the GPS fix.
+    """
     this_cycle, next_cycle = cycles[cycle_number], cycles[cycle_number + 1]
-    duration_hours = (next_cycle["time"] - this_cycle["time"]).total_seconds() / 3600
+    surfaced = next_cycle["ascent_end"]
+    if surfaced is None:
+        logger.warning("Cycle %d has no ascent end time, using its GPS fix time", cycle_number + 1)
+        surfaced = next_cycle["time"]
+    duration_hours = (surfaced - this_cycle["time"]).total_seconds() / 3600
 
     durations = [(cycles[c + 1]["time"] - cycles[c]["time"]).total_seconds() / 3600 for c in cycles if c + 1 in cycles]
     if duration_hours > 2 * np.median(durations):

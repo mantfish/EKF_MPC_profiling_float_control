@@ -7,7 +7,7 @@ import resource
 # a Render instance's memory cap (diagnosing repeated OOM restarts).
 _pre_import_rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import datetime, timezone
 from http import HTTPStatus
 
@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from helpers import ControlAction, Location
 from main import LOG_FORMAT, get_action, predict_surfacing, setup_logging, surface_trigger
-from records import Records
+from records import Records, ou_from_json, ou_to_json
 
 setup_logging(debug=False)
 
@@ -115,13 +115,17 @@ def update_stored_action(float_id: int, cycle_number: int, drifting_depth: float
     return True
 
 @app.post("/update_ou")
-def update_ou(float_id: int, tau_e: float = None, tau_n: float = None, q_e: float = None, q_n: float = None) -> dict:
-    """Sets the OU bias parameters used from the next simulation on, parameters left out keep their value."""
+def update_ou(float_id: int, tau_e_hours: float = None, tau_n_hours: float = None, q_e: float = None, q_n: float = None) -> dict:
+    """Sets the OU bias parameters used from the next simulation on, parameters left out keep their value.
+
+    Every update is appended to floats/<id>/ou.log, fetch it with /get_file.
+    """
     records = get_records(float_id)
-    changes = {name: value for name, value in dict(tau_e=tau_e, tau_n=tau_n, q_e=q_e, q_n=q_n).items() if value is not None}
-    ou = replace(records.get_ou(), **changes)
+    ou_json = ou_to_json(records.get_ou())
+    changes = {name: value for name, value in dict(tau_e=tau_e_hours, tau_n=tau_n_hours, q_e=q_e, q_n=q_n).items() if value is not None}
+    ou = ou_from_json({**ou_json, **changes})
     records.write_ou(ou, records.get_last_cycle_number() or 0)
-    return asdict(ou)
+    return ou_to_json(ou)
 
 @app.post("/update_config")
 def update_config(float_id: int, config: dict = Body(...)) -> bool:

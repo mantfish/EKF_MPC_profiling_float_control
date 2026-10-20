@@ -1,5 +1,5 @@
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 import math
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "floats"))
-LOG_FILES = ["action_log.json", "surfacing_log.json", "ou_log.json", "error_log.csv", "estimated_trajectory.csv", "predicted_surfacings.csv"]
+LOG_FILES = ["action_log.json", "surfacing_log.json", "error_log.csv", "estimated_trajectory.csv", "predicted_surfacings.csv"]
 
 
 def config_from_dict(config_json: dict, float_dir: Path) -> Config:
@@ -28,7 +28,7 @@ def config_from_dict(config_json: dict, float_dir: Path) -> Config:
         vertical_dt=config_json["vertical_dt"],
         parking_dt=config_json["parking_dt"],
         bathymetry_file_name=config_json["bathymetry_file_name"],
-        estimated_tranmission_time_hours=config_json.get("estimated_tranmission_time_mins", 0) / 60,
+        delay_before_diving_hours=config_json.get("delay_before_diving_mins", 0) / 60,
         ascent_speed_m_per_s=config_json["ascent_speed_m_per_s"],
         descent_speed_m_per_s=config_json["descent_speed_m_per_s"],
         possible_actions=[
@@ -44,6 +44,15 @@ def config_from_dict(config_json: dict, float_dir: Path) -> Config:
     )
 
 
+def ou_from_json(ou_json: dict) -> OU:
+    """ou.json keeps tau in hours, OU works in seconds."""
+    return OU(ou_json["tau_e"] * 3600, ou_json["tau_n"] * 3600, ou_json["q_e"], ou_json["q_n"])
+
+
+def ou_to_json(ou: OU) -> dict:
+    return {"tau_e": ou.tau_e / 3600, "tau_n": ou.tau_n / 3600, "q_e": ou.q_e, "q_n": ou.q_n}
+
+
 class Records:
     def __init__(self, float_id):
         self.float_id = float_id
@@ -52,7 +61,8 @@ class Records:
             raise FileNotFoundError(f"Float {float_id} not initialised yet, no folder at {self.float_dir}")
         self.action_log_path = self.float_dir / "action_log.json"
         self.surfacing_log_path = self.float_dir / "surfacing_log.json"
-        self.ou_log_path = self.float_dir / "ou_log.json"
+        self.ou_path = self.float_dir / "ou.json"
+        self.ou_log_path = self.float_dir / "ou.log"
         self.error_log_path = self.float_dir / "error_log.csv"
         self.trajectory_path = self.float_dir / "estimated_trajectory.csv"
         self.prediction_log_path = self.float_dir / "predicted_surfacings.csv"
@@ -236,15 +246,19 @@ class Records:
     def _append_csv(self, path, rows):
         pd.DataFrame(rows).to_csv(path, mode="a", header=not path.exists(), index=False)
 
-    # OU log: the bias model parameters used from each cycle onwards
+    # OU: ou.json holds the bias model parameters in use, with tau in hours, ou.log records every update
 
     def get_ou(self) -> OU:
-        log = self._read_log(self.ou_log_path)
-        if not log:
-            return OU()
-        latest = log[-1]
-        return OU(latest["tau_e"], latest["tau_n"], latest["q_e"], latest["q_n"])
+        """Reads ou.json, converting tau from hours to the seconds OU works in."""
+        return ou_from_json(self._read_json(self.ou_path))
 
     def write_ou(self, ou: OU, cycle_number):
-        self._append_log(self.ou_log_path, {"cycle_number": cycle_number, **asdict(ou)})
+        """Replaces ou.json and appends the new values to ou.log."""
+        ou_json = ou_to_json(ou)
+        with open(self.ou_path, "w") as f:
+            json.dump(ou_json, f, indent=4)
+        values = f"tau_e {ou_json['tau_e']} h, tau_n {ou_json['tau_n']} h, q_e {ou_json['q_e']}, q_n {ou_json['q_n']}"
+        with open(self.ou_log_path, "a") as f:
+            f.write(f"{datetime.now(timezone.utc):%Y-%m-%dT%H:%M:%SZ} cycle {cycle_number}: {values}\n")
+        logger.info("Updated OU for float %s: %s", self.float_id, values)
 

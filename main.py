@@ -21,6 +21,7 @@ def simulate_action(starting_state, forecast, bathymetry, action, config, ou):
 
     simulated_state = copy.deepcopy(starting_state)
     simulated_end_time = starting_state.time + timedelta(hours=action.duration_hours)
+    dive_time = starting_state.time + timedelta(hours=config.delay_before_diving_hours)
 
     # Check that forecast and bathymetry cover the entire simulation
     if not forecast.check_forecast_coverage((starting_state.time, simulated_end_time)):
@@ -37,7 +38,7 @@ def simulate_action(starting_state, forecast, bathymetry, action, config, ou):
 
         # Phase transitions
         if simulated_state.phase == "communicating":
-            if simulated_state.time >= starting_state.time:
+            if simulated_state.time >= dive_time:
                 simulated_state.phase = "descending"
 
         if simulated_state.phase == "descending":
@@ -230,7 +231,6 @@ def surface_trigger(float_id, surface_location: Location, surface_time, cycle_nu
         records.save_surfacing(updated_state, cycle_number)
         records.save_trajectory(estimated_trajectory, cycle_number)
         records.update_errors(cycle_number, estimated_surfacing, updated_state, nis, ou)
-        records.write_ou(ou, cycle_number)
 
     return updated_state
 
@@ -244,7 +244,8 @@ def initialise_float(float_id, config: dict, starting_location, starting_time, s
     starting_state = EstimatedState(time=starting_time, location=starting_location, depth=0.0, phase="communicating")
     records.save_surfacing(starting_state, cycle_number)
     records.save_action(starting_action, cycle_number, source="initial")
-    records.write_ou(OU(), cycle_number)
+    if not records.ou_path.exists():
+        records.write_ou(OU(), cycle_number)
     logger.info("Initialised float %s at %s, cycle %s", float_id, starting_location, cycle_number)
     return records
 
@@ -263,4 +264,5 @@ def main(float_id, surface_location, surface_time, cycle_number, debug=True) -> 
 
 
 if __name__ == "__main__":
-    main(3902607, Location(latitude=56.3454, longitude=19.3095), datetime(2026, 7, 30, 5, 30), cycle_number=1)
+    #main(3902607, Location(latitude=56.3454, longitude=19.3095), datetime(2026, 7, 30, 5, 30), cycle_number=1)
+    print(get)

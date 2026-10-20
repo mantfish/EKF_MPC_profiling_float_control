@@ -66,7 +66,7 @@ class Config:
     vertical_dt: float
     parking_dt: float
     bathymetry_file_name: str
-    estimated_tranmission_time_hours: float
+    delay_before_diving_hours: float  # time on the surface after the first GPS fix before descending
     ascent_speed_m_per_s: float
     descent_speed_m_per_s: float
     possible_actions: list[ControlAction]
